@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use vm_core::{
+use miden_core::{
     crypto::hash::{Blake3_192, Blake3_256, Hasher, Rpo256, Rpx256},
     utils::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable},
 };
@@ -163,5 +163,21 @@ impl Deserializable for ExecutionProof {
         let hash_fn = HashFunction::read_from(source)?;
 
         Ok(ExecutionProof { proof, hash_fn })
+    }
+}
+
+// TESTING UTILS
+// ================================================================================================
+
+#[cfg(any(test, feature = "testing"))]
+impl ExecutionProof {
+    /// Creates a dummy `ExecutionProof` for testing purposes only.
+    ///
+    /// Uses a dummy `Proof` and the default `HashFunction`.
+    pub fn new_dummy() -> Self {
+        ExecutionProof {
+            proof: Proof::new_dummy(),
+            hash_fn: HashFunction::default(),
+        }
     }
 }

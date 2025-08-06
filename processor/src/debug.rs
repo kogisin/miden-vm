@@ -6,7 +6,7 @@ use alloc::{
 use core::fmt;
 
 use miden_air::RowIndex;
-use vm_core::{AssemblyOp, FieldElement, Operation, StackOutputs};
+use miden_core::{AssemblyOp, FieldElement, Operation, StackOutputs};
 
 use crate::{
     Chiplets, ChipletsLengths, Decoder, ExecutionError, Felt, MemoryAddress, Process, Stack,
@@ -169,7 +169,8 @@ impl VmStateIterator {
             memory: self.chiplets.memory.get_state_at(ctx, self.clk),
         });
 
-        self.clk -= 1;
+        // Use saturating_sub to prevent underflow when at clock 0
+        self.clk = self.clk.saturating_sub(1);
 
         result
     }

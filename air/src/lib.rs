@@ -9,7 +9,7 @@ extern crate std;
 
 use alloc::vec::Vec;
 
-use vm_core::{
+use miden_core::{
     ExtensionOf, ONE, ProgramInfo, StackInputs, StackOutputs, ZERO,
     utils::{ByteReader, ByteWriter, Deserializable, Serializable},
 };
@@ -17,7 +17,11 @@ use winter_air::{
     Air, AirContext, Assertion, EvaluationFrame, ProofOptions as WinterProofOptions, TraceInfo,
     TransitionConstraintDegree,
 };
-use winter_prover::matrix::ColMatrix;
+use winter_prover::{
+    crypto::{RandomCoin, RandomCoinError},
+    math::get_power_series,
+    matrix::ColMatrix,
+};
 
 mod constraints;
 pub use constraints::stack;
@@ -32,16 +36,18 @@ mod options;
 mod proof;
 
 mod utils;
+
 // RE-EXPORTS
 // ================================================================================================
+
 pub use errors::ExecutionOptionsError;
-pub use options::{ExecutionOptions, ProvingOptions};
-pub use proof::{ExecutionProof, HashFunction};
-use utils::TransitionConstraintRange;
-pub use vm_core::{
+pub use miden_core::{
     Felt, FieldElement, StarkField,
     utils::{DeserializationError, ToElements},
 };
+pub use options::{ExecutionOptions, ProvingOptions};
+pub use proof::{ExecutionProof, HashFunction};
+use utils::TransitionConstraintRange;
 pub use winter_air::{AuxRandElements, FieldExtension, PartitionOptions};
 
 /// Selects whether to include all existing constraints or only the ones currently encoded in
@@ -148,13 +154,10 @@ impl Air for ProcessorAir {
     // ASSERTIONS
     // --------------------------------------------------------------------------------------------
 
-    #[allow(clippy::vec_init_then_push)]
     fn get_assertions(&self) -> Vec<Assertion<Felt>> {
-        let mut result = Vec::new();
-
         // --- set assertions for the first step --------------------------------------------------
         // first value of clk is 0
-        result.push(Assertion::single(CLK_COL_IDX, 0, ZERO));
+        let mut result = vec![Assertion::single(CLK_COL_IDX, 0, ZERO)];
 
         if IS_FULL_CONSTRAINT_SET {
             // first value of fmp is 2^30
@@ -271,6 +274,29 @@ impl Air for ProcessorAir {
     fn context(&self) -> &AirContext<Felt> {
         &self.context
     }
+
+    fn get_aux_rand_elements<E, R>(
+        &self,
+        public_coin: &mut R,
+    ) -> Result<AuxRandElements<E>, RandomCoinError>
+    where
+        E: FieldElement<BaseField = Self::BaseField>,
+        R: RandomCoin<BaseField = Self::BaseField>,
+    {
+        let num_elements = self.trace_info().get_num_aux_segment_rand_elements();
+        let mut rand_elements = Vec::with_capacity(num_elements);
+        let max_message_length = num_elements - 1;
+
+        let alpha = public_coin.draw()?;
+        let beta = public_coin.draw()?;
+
+        let betas = get_power_series(beta, max_message_length);
+
+        rand_elements.push(alpha);
+        rand_elements.extend_from_slice(&betas);
+
+        Ok(AuxRandElements::new(rand_elements))
+    }
 }
 
 // PUBLIC INPUTS
@@ -297,7 +323,7 @@ impl PublicInputs {
     }
 }
 
-impl vm_core::ToElements<Felt> for PublicInputs {
+impl miden_core::ToElements<Felt> for PublicInputs {
     fn to_elements(&self) -> Vec<Felt> {
         let mut result = self.stack_inputs.to_vec();
         result.append(&mut self.stack_outputs.to_vec());

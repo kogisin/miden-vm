@@ -13,13 +13,16 @@ use miden_air::{
         main_trace::MainTrace,
     },
 };
-use vm_core::{
+use miden_core::{
     Felt, FieldElement, ONE, OPCODE_CALL, OPCODE_JOIN, OPCODE_LOOP, OPCODE_SPLIT, ZERO,
     utils::range,
 };
 
-use super::{build_value, get_op_label};
-use crate::debug::{BusDebugger, BusMessage};
+use super::get_op_label;
+use crate::{
+    chiplets::aux_trace::build_value,
+    debug::{BusDebugger, BusMessage},
+};
 // REQUESTS
 // ==============================================================================================
 

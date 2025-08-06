@@ -4,10 +4,13 @@ use miden_air::{
     RowIndex,
     trace::{chiplets::bitwise::OP_CYCLE_LEN as BITWISE_OP_CYCLE_LEN, main_trace::MainTrace},
 };
-use vm_core::{Felt, FieldElement, ONE, ZERO};
+use miden_core::{Felt, FieldElement, ONE, ZERO};
 
-use super::{build_value, get_op_label};
-use crate::debug::{BusDebugger, BusMessage};
+use super::get_op_label;
+use crate::{
+    chiplets::aux_trace::build_value,
+    debug::{BusDebugger, BusMessage},
+};
 
 // REQUESTS
 // ==============================================================================================

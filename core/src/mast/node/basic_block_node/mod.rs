@@ -203,6 +203,7 @@ impl BasicBlockNode {
     }
 }
 
+//-------------------------------------------------------------------------------------------------
 /// Mutators
 impl BasicBlockNode {
     /// Sets the provided list of decorators to be executed before all existing decorators.
@@ -226,6 +227,11 @@ impl BasicBlockNode {
     /// with the given ['DecoratorList'].
     pub fn set_decorators(&mut self, decorator_list: DecoratorList) {
         self.decorators = decorator_list;
+    }
+
+    /// Removes all decorators from this node.
+    pub fn remove_decorators(&mut self) {
+        self.decorators.truncate(0);
     }
 }
 
@@ -356,11 +362,10 @@ impl<'a> Iterator for OperationOrDecoratorIterator<'a> {
         // check if there's a decorator to execute
         if let Some((op_index, decorator)) =
             self.node.decorators.get(self.decorator_list_next_index)
+            && *op_index == self.op_index
         {
-            if *op_index == self.op_index {
-                self.decorator_list_next_index += 1;
-                return Some(OperationOrDecorator::Decorator(decorator));
-            }
+            self.decorator_list_next_index += 1;
+            return Some(OperationOrDecorator::Decorator(decorator));
         }
 
         // If no decorator needs to be executed, then execute the operation

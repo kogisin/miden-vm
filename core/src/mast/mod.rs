@@ -7,9 +7,6 @@ use core::{
     fmt, mem,
     ops::{Index, IndexMut},
 };
-
-use crate::crypto::hash::{Blake3_256, Blake3Digest, Digest};
-
 mod node;
 pub use node::{
     BasicBlockNode, CallNode, DynNode, ExternalNode, JoinNode, LoopNode, MastNode, MastNodeExt,
@@ -17,7 +14,8 @@ pub use node::{
 };
 
 use crate::{
-    AdviceMap, Decorator, DecoratorList, Felt, Operation, Word,
+    AdviceMap, Decorator, DecoratorList, Felt, LexicographicWord, Operation, Word,
+    crypto::hash::{Blake3_256, Blake3Digest, Digest, Hasher},
     utils::{ByteWriter, DeserializationError, Serializable},
 };
 
@@ -212,6 +210,14 @@ impl MastForest {
 
     pub fn append_after_exit(&mut self, node_id: MastNodeId, decorator_ids: &[DecoratorId]) {
         self[node_id].append_after_exit(decorator_ids)
+    }
+
+    /// Removes all decorators from this MAST forest.
+    pub fn strip_decorators(&mut self) {
+        for node in self.nodes.iter_mut() {
+            node.remove_decorators();
+        }
+        self.decorators.truncate(0);
     }
 
     /// Merges all `forests` into a new [`MastForest`].
@@ -456,6 +462,19 @@ impl MastForest {
             .len()
             .try_into()
             .expect("MAST forest contains more than 2^32 procedures.")
+    }
+
+    /// Returns the [Word] representing the content hash of a subset of [`MastNodeId`]s.
+    ///
+    /// # Panics
+    /// This function panics if any `node_ids` is not a node of this forest.
+    pub fn compute_nodes_commitment<'a>(
+        &self,
+        node_ids: impl IntoIterator<Item = &'a MastNodeId>,
+    ) -> Word {
+        let mut digests: Vec<Word> = node_ids.into_iter().map(|&id| self[id].digest()).collect();
+        digests.sort_unstable_by_key(|word| LexicographicWord::from(*word));
+        miden_crypto::hash::rpo::Rpo256::merge_many(&digests)
     }
 
     /// Returns the number of nodes in this MAST forest.

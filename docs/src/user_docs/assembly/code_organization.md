@@ -1,3 +1,8 @@
+---
+title: "Code Organization"
+sidebar_position: 2
+---
+
 ## Code organization
 A Miden assembly program is just a sequence of instructions each describing a specific directive or an operation. You can use any combination of whitespace characters to separate one instruction from another.
 
@@ -14,7 +19,7 @@ end
 ```
 A procedure label must start with a letter and can contain any combination of numbers, ASCII letters, and underscores (`_`). Should you need to represent a label with other characters, an extended set is permitted via quoted identifiers, i.e. an identifier surrounded by `".."`. Quoted identifiers additionally allow any alphanumeric letter (ASCII or UTF-8), as well as various common punctuation characters: `!`, `?`, `:`, `.`, `<`, `>`, and `-`. Quoted identifiers are primarily intended for representing symbols/identifiers when compiling higher-level languages to Miden Assembly, but can be used anywhere that normal identifiers are expected.
 
-The number of locals specifies the number of memory-based local field elements a procedure can access (via `loc_load`, `loc_store`, and [other instructions](./io_operations.md#random-access-memory)). If a procedure doesn't need any memory-based locals, this parameter can be omitted or set to `0`. A procedure can have at most $2^{16}$ locals, and the total number of locals available to all procedures at runtime is limited to $2^{30}$. Note that the assembler internally always rounds up the number of declared locals to the nearest multiple of 4.
+The number of locals specifies the number of memory-based local field elements a procedure can access (via `loc_load`, `loc_store`, and [other instructions](./io_operations.md#random-access-memory)). If a procedure doesn't need any memory-based locals, this parameter can be omitted or set to `0`. A procedure can have at most $2^{16}$ locals, and the total number of locals available to all procedures at runtime is limited to $2^{31} - 1$. Note that the assembler internally always rounds up the number of declared locals to the nearest multiple of 4.
 
 To execute a procedure, the `exec.<label>`, `call.<label>`, and `syscall.<label>` instructions can be used. For example:
 ```
@@ -51,7 +56,7 @@ Dynamic code execution in the same context is achieved by setting the top elemen
 
 ```
 # Retrieve the hash of `foo`, store it at `ADDR`, and push `ADDR` on top of the stack
-procref.foo mem_storew.ADDR dropw push.ADDR
+procref.foo mem_storew_be.ADDR dropw push.ADDR
 
 # Execute `foo` dynamically
 dynexec
@@ -143,7 +148,7 @@ begin
 end
 ```
 
-In the examples above, we have been referencing the `std::math::u64` module, which is a module in the [Miden Standard Library](../stdlib/main.md). There are a number of useful modules there, that provide a variety of helpful functionality out of the box.
+In the examples above, we have been referencing the `std::math::u64` module, which is a module in the [Miden Standard Library](../stdlib/index.md). There are a number of useful modules there, that provide a variety of helpful functionality out of the box.
 
 If the assembler does not know about the imported modules, assembly will fail. You can register modules with the assembler when instantiating it, either in source form, or precompiled form. See the [miden-assembly docs](https://crates.io/crates/miden-assembly) for details. The assembler will use this information to resolve references to imported procedures during assembly.
 
@@ -196,6 +201,49 @@ begin
     mem_store.ADDR_1
 end
 
+```
+
+#### Word constants
+
+Along with the regular value constants a _word_ constants could be used. They could be declared as an array of four elements or as a long hex value, and then could be used in the `push` instructions referenced by their name. Notice that a word constant can not be used in a constant expression.
+
+```
+const.SAMPLE_WORD=[1,2,3,4]
+const.SAMPLE_HEX_WORD=0x0200000000000000030000000000000004000000000000000500000000000000
+
+begin
+    push.SAMPLE_WORD       # is equivalent to push.1.2.3.4
+    push.SAMPLE_HEX_WORD.6 # is equivalent to push.2.3.4.5.6
+end
+```
+
+#### Constant slices
+
+It is possible to get just some part of a word constant using slice notation. This could be done by specifying a range in square brackets right after the constant's name. Attempt to get slices from constants which don't represent words will result in errors. 
+
+```
+const.SAMPLE_WORD=[5,6,7,8]
+const.SAMPLE_VALUE=9
+
+begin
+    push.SAMPLE_WORD[1..3]  # is equivalent to push.6.7
+    push.SAMPLE_WORD[0]     # is equivalent to push.5
+
+    push.SAMPLE_VALUE[1..3] # returns an error: invalid slice constant
+end
+```
+
+If a slice with an invalid or empty range is used with a word constant, an error will be returned.
+
+```
+const.SAMPLE_WORD=[5,6,7,8]
+
+begin
+    push.SAMPLE_WORD[10..6] # returns an error: invalid or empty range
+    push.SAMPLE_WORD[5..7]  # returns an error: invalid or empty range
+    push.SAMPLE_WORD[2..2]  # returns an error: invalid or empty range
+
+end
 ```
 
 ### Comments

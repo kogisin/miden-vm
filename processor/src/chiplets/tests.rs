@@ -123,7 +123,7 @@ fn build_trace(
     let program = {
         let mut mast_forest = MastForest::new();
 
-        let basic_block_id = mast_forest.add_block(operations, None).unwrap();
+        let basic_block_id = mast_forest.add_block(operations, Vec::new()).unwrap();
         mast_forest.make_root(basic_block_id);
 
         Program::new(mast_forest.into(), basic_block_id)
@@ -147,6 +147,7 @@ fn build_trace(
 /// of the hasher trace.
 fn validate_hasher_trace(trace: &ChipletsTrace, start: usize, end: usize) {
     // The selectors should match the hasher selectors
+    #[allow(clippy::needless_range_loop)]
     for row in start..end {
         // The selectors should match the selectors for the hasher segment
         assert_eq!(ZERO, trace[0][row]);

@@ -1,9 +1,12 @@
-use alloc::sync::Arc;
+// Allow unused assignments - required by miette::Diagnostic derive macro
+#![allow(unused_assignments)]
+
+use alloc::{sync::Arc, vec::Vec};
 
 use miden_air::RowIndex;
 use miden_core::{
-    Felt, QuadFelt, Word,
-    mast::{DecoratorId, MastForest, MastNodeExt, MastNodeId},
+    EventId, EventName, Felt, QuadFelt, Word,
+    mast::{DecoratorId, MastForest, MastNodeErrorContext, MastNodeId},
     stack::MIN_STACK_DEPTH,
     utils::to_hex,
 };
@@ -11,11 +14,7 @@ use miden_debug_types::{SourceFile, SourceSpan};
 use miden_utils_diagnostics::{Diagnostic, miette};
 use winter_prover::ProverError;
 
-use crate::{
-    BaseHost, EventError, MemoryError,
-    host::advice::AdviceError,
-    system::{FMP_MAX, FMP_MIN},
-};
+use crate::{BaseHost, EventError, MemoryError, host::advice::AdviceError};
 // EXECUTION ERROR
 // ================================================================================================
 
@@ -33,12 +32,6 @@ pub enum ExecutionError {
         #[diagnostic_source]
         err: AdviceError,
     },
-    /// This error is caught by the assembler, so we don't need diagnostics here.
-    #[error("illegal use of instruction {0} while inside a syscall")]
-    CallInSyscall(&'static str),
-    /// This error is caught by the assembler, so we don't need diagnostics here.
-    #[error("instruction `caller` used outside of kernel context")]
-    CallerNotInSyscall,
     #[error("external node with mast root {0} resolved to an external node")]
     CircularExternalNode(Word),
     #[error("exceeded the allowed number of max cycles {0}")]
@@ -65,19 +58,25 @@ pub enum ExecutionError {
         source_file: Option<Arc<SourceFile>>,
         digest: Word,
     },
-    #[error("error during processing of event with id {event_id} in on_event handler")]
+    #[error("error during processing of event {}", match event_name {
+        Some(name) => format!("'{}' (ID: {})", name, event_id),
+        None => format!("with ID: {}", event_id),
+    })]
     #[diagnostic()]
     EventError {
         #[label]
         label: SourceSpan,
         #[source_code]
         source_file: Option<Arc<SourceFile>>,
-        event_id: u32,
+        event_id: EventId,
+        event_name: Option<EventName>,
         #[source]
         error: EventError,
     },
-    #[error("attempted to add event handler with previously inserted id: {id}")]
-    DuplicateEventHandler { id: u32 },
+    #[error("attempted to add event handler for '{event}' (already registered)")]
+    DuplicateEventHandler { event: EventName },
+    #[error("attempted to add event handler for '{event}' (reserved system event)")]
+    ReservedEventNamespace { event: EventName },
     #[error("assertion failed at clock cycle {clk} with error {}",
       match err_msg {
         Some(msg) => format!("message: {msg}"),
@@ -96,10 +95,6 @@ pub enum ExecutionError {
     },
     #[error("failed to execute the program for internal reason: {0}")]
     FailedToExecuteProgram(&'static str),
-    #[error(
-        "Updating FMP register from {0} to {1} failed because {1} is outside of {FMP_MIN}..{FMP_MAX}"
-    )]
-    InvalidFmpValue(Felt, Felt),
     #[error("FRI domain segment value cannot exceed 3, but was {0}")]
     InvalidFriDomainSegment(u64),
     #[error("degree-respecting projection is inconsistent: expected {0} but was {1}")]
@@ -204,13 +199,13 @@ pub enum ExecutionError {
         source_file: Option<Arc<SourceFile>>,
         value: Felt,
     },
-    #[error("operation expected a u32 value, but got {value} (error code: {err_code})")]
-    NotU32Value {
+    #[error("operation expected u32 values, but got values: {values:?} (error code: {err_code})")]
+    NotU32Values {
         #[label]
         label: SourceSpan,
         #[source_code]
         source_file: Option<Arc<SourceFile>>,
-        value: Felt,
+        values: Vec<Felt>,
         err_code: Felt,
     },
     #[error(
@@ -269,6 +264,8 @@ pub enum ExecutionError {
         source_file: Option<Arc<SourceFile>>,
         error: AceError,
     },
+    #[error("execution yielded unexpected precompiles")]
+    UnexpectedPrecompiles,
 }
 
 impl ExecutionError {
@@ -297,10 +294,21 @@ impl ExecutionError {
         Self::DynamicNodeNotFound { label, source_file, digest }
     }
 
-    pub fn event_error(error: EventError, event_id: u32, err_ctx: &impl ErrorContext) -> Self {
+    pub fn event_error(
+        error: EventError,
+        event_id: EventId,
+        event_name: Option<EventName>,
+        err_ctx: &impl ErrorContext,
+    ) -> Self {
         let (label, source_file) = err_ctx.label_and_source_file();
 
-        Self::EventError { label, source_file, event_id, error }
+        Self::EventError {
+            label,
+            source_file,
+            event_id,
+            event_name,
+            error,
+        }
     }
 
     pub fn failed_assertion(
@@ -383,7 +391,17 @@ impl ExecutionError {
 
     pub fn not_u32_value(value: Felt, err_code: Felt, err_ctx: &impl ErrorContext) -> Self {
         let (label, source_file) = err_ctx.label_and_source_file();
-        Self::NotU32Value { label, source_file, value, err_code }
+        Self::NotU32Values {
+            label,
+            source_file,
+            values: vec![value],
+            err_code,
+        }
+    }
+
+    pub fn not_u32_values(values: Vec<Felt>, err_code: Felt, err_ctx: &impl ErrorContext) -> Self {
+        let (label, source_file) = err_ctx.label_and_source_file();
+        Self::NotU32Values { label, source_file, values, err_code }
     }
 
     pub fn smt_node_not_found(node: Word, err_ctx: &impl ErrorContext) -> Self {
@@ -498,7 +516,11 @@ pub struct ErrorContextImpl {
 
 impl ErrorContextImpl {
     #[allow(dead_code)]
-    pub fn new(mast_forest: &MastForest, node: &impl MastNodeExt, host: &impl BaseHost) -> Self {
+    pub fn new(
+        mast_forest: &MastForest,
+        node: &impl MastNodeErrorContext,
+        host: &impl BaseHost,
+    ) -> Self {
         let (label, source_file) =
             Self::precalc_label_and_source_file(None, mast_forest, node, host);
         Self { label, source_file }
@@ -507,7 +529,7 @@ impl ErrorContextImpl {
     #[allow(dead_code)]
     pub fn new_with_op_idx(
         mast_forest: &MastForest,
-        node: &impl MastNodeExt,
+        node: &impl MastNodeErrorContext,
         host: &impl BaseHost,
         op_idx: usize,
     ) -> Self {
@@ -520,7 +542,7 @@ impl ErrorContextImpl {
     fn precalc_label_and_source_file(
         op_idx: Option<usize>,
         mast_forest: &MastForest,
-        node: &impl MastNodeExt,
+        node: &impl MastNodeErrorContext,
         host: &impl BaseHost,
     ) -> (SourceSpan, Option<Arc<SourceFile>>) {
         node.get_assembly_op(mast_forest, op_idx)

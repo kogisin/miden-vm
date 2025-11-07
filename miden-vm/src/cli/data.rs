@@ -97,7 +97,12 @@ impl OutputFile {
 
     /// Converts stack output vector to [StackOutputs].
     pub fn stack_outputs(&self) -> Result<StackOutputs, String> {
-        let stack = self.stack.iter().map(|v| v.parse::<u64>().unwrap()).collect::<Vec<u64>>();
+        let stack = self
+            .stack
+            .iter()
+            .map(|v| v.parse::<u64>())
+            .collect::<Result<Vec<u64>, _>>()
+            .map_err(|err| format!("Failed to parse stack output as u64 - {err}"))?;
 
         StackOutputs::try_from_ints(stack)
             .map_err(|e| format!("Construct stack outputs failed {e}"))
@@ -223,7 +228,8 @@ impl ProofFile {
         let proof_bytes = proof.to_bytes();
 
         // write proof bytes to file
-        file.write_all(&proof_bytes).unwrap();
+        file.write_all(&proof_bytes)
+            .map_err(|err| format!("Failed to write proof file `{}` - {}", path.display(), err))?;
 
         Ok(())
     }
@@ -237,7 +243,7 @@ pub struct ProgramHash;
 /// Helper method to parse program hash from hex
 impl ProgramHash {
     #[instrument(name = "read_program_hash", skip_all)]
-    pub fn read(hash_hex_string: &String) -> Result<Word, String> {
+    pub fn read(hash_hex_string: &str) -> Result<Word, String> {
         // decode hex to bytes
         let program_hash_bytes = hex::decode(hash_hex_string)
             .map_err(|err| format!("Failed to convert program hash to bytes {err}"))?;

@@ -1,7 +1,10 @@
 use core::fmt;
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
 mod decorators;
-pub use decorators::{AssemblyOp, DebugOptions, Decorator, DecoratorIterator, DecoratorList};
+pub use decorators::{AssemblyOp, DebugOptions, Decorator, DecoratorList};
 use opcode_constants::*;
 
 use crate::{
@@ -30,7 +33,7 @@ pub(super) mod opcode_constants {
     pub const OPCODE_INV: u8            = 0b0000_0011;
     pub const OPCODE_INCR: u8           = 0b0000_0100;
     pub const OPCODE_NOT: u8            = 0b0000_0101;
-    pub const OPCODE_FMPADD: u8         = 0b0000_0110;
+    /* unused                             0b0000_0110 */
     pub const OPCODE_MLOAD: u8          = 0b0000_0111;
     pub const OPCODE_SWAP: u8           = 0b0000_1000;
     pub const OPCODE_CALLER: u8         = 0b0000_1001;
@@ -56,6 +59,7 @@ pub(super) mod opcode_constants {
     pub const OPCODE_SWAPW2: u8         = 0b0001_1100;
     pub const OPCODE_SWAPW3: u8         = 0b0001_1101;
     pub const OPCODE_SWAPDW: u8         = 0b0001_1110;
+    pub const OPCODE_EMIT: u8           = 0b0001_1111;
 
     pub const OPCODE_ASSERT: u8         = 0b0010_0000;
     pub const OPCODE_EQ: u8             = 0b0010_0001;
@@ -72,7 +76,7 @@ pub(super) mod opcode_constants {
     pub const OPCODE_MLOADW: u8         = 0b0010_1100;
     pub const OPCODE_MSTORE: u8         = 0b0010_1101;
     pub const OPCODE_MSTOREW: u8        = 0b0010_1110;
-    pub const OPCODE_FMPUPDATE: u8      = 0b0010_1111;
+    /* unused                             0b0010_1111 */
 
     pub const OPCODE_PAD: u8            = 0b0011_0000;
     pub const OPCODE_DUP0: u8           = 0b0011_0001;
@@ -110,7 +114,7 @@ pub(super) mod opcode_constants {
     pub const OPCODE_JOIN: u8           = 0b0101_0111;
     pub const OPCODE_DYN: u8            = 0b0101_1000;
     pub const OPCODE_HORNEREXT: u8      = 0b0101_1001;
-    pub const OPCODE_EMIT: u8           = 0b0101_1010;
+    pub const OPCODE_LOGPRECOMPILE: u8  = 0b0101_1010;
     pub const OPCODE_PUSH: u8           = 0b0101_1011;
     pub const OPCODE_DYNCALL: u8        = 0b0101_1100;
     pub const OPCODE_EVALCIRCUIT: u8    = 0b0101_1101;
@@ -130,6 +134,7 @@ pub(super) mod opcode_constants {
 
 /// A set of native VM operations which take exactly one cycle to execute.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[repr(u8)]
 pub enum Operation {
     // ----- system operations -------------------------------------------------------------------
@@ -141,13 +146,6 @@ pub enum Operation {
     /// The internal value specifies an error code associated with the error in case when the
     /// execution fails.
     Assert(Felt) = OPCODE_ASSERT,
-
-    /// Pops an element off the stack, adds the current value of the `fmp` register to it, and
-    /// pushes the result back onto the stack.
-    FmpAdd = OPCODE_FMPADD,
-
-    /// Pops an element off the stack and adds it to the current value of `fmp` register.
-    FmpUpdate = OPCODE_FMPUPDATE,
 
     /// Pushes the current depth of the stack onto the stack.
     SDepth = OPCODE_SDEPTH,
@@ -161,15 +159,20 @@ pub enum Operation {
     /// instruction.
     Clk = OPCODE_CLK,
 
-    /// Emits an event id (`u32` value) to the host.
+    /// Emits an event to the host.
     ///
-    /// We interpret the event id as follows:
-    /// - 16 most significant bits identify the event source,
-    /// - 16 least significant bits identify the actual event.
+    /// Semantics:
+    /// - Reads the event id from the top of the stack (as a `Felt`) without consuming it; the
+    ///   caller is responsible for pushing and later dropping the id.
+    /// - User-defined events are conventionally derived from strings via
+    ///   `hash_string_to_word(name)[0]` (Blake3-based) and may be emitted via immediate forms in
+    ///   assembly (`emit.event("...")` or `emit.CONST` where `CONST=event("...")`).
+    /// - System events are still identified by specific 32-bit codes; the VM attempts to interpret
+    ///   the stack `Felt` as `u32` to dispatch known system events, and otherwise forwards the
+    ///   event to the host.
     ///
-    /// Similar to Noop, this operation does not change the state of user stack. The immediate
-    /// value affects the program MAST root computation.
-    Emit(u32) = OPCODE_EMIT,
+    /// This operation does not change the state of the user stack aside from reading the value.
+    Emit = OPCODE_EMIT,
 
     // ----- flow control operations -------------------------------------------------------------
     /// Marks the beginning of a join block.
@@ -274,6 +277,9 @@ pub enum Operation {
     /// Computes the product of two elements in the extension field of degree 2 and pushes the
     /// result back onto the stack as the third and fourth elements. Pushes 0 onto the stack as
     /// the first and second elements.
+    ///
+    /// The extension field is defined as 𝔽ₚ\[x\]/(x² - x + 2), i.e. using the
+    /// irreducible quadratic polynomial x² - x + 2 over the base field.
     Ext2Mul = OPCODE_EXT2MUL,
 
     // ----- u32 operations ----------------------------------------------------------------------
@@ -602,6 +608,10 @@ pub enum Operation {
     /// Evaluates an arithmetic circuit given a pointer to its description in memory, the number
     /// of arithmetic gates, and the sum of the input and constant gates.
     EvalCircuit = OPCODE_EVALCIRCUIT,
+
+    /// Logs a precompile event. This instruction is used to signal that a precompile computation
+    /// was requested.
+    LogPrecompile = OPCODE_LOGPRECOMPILE,
 }
 
 impl Operation {
@@ -619,10 +629,11 @@ impl Operation {
     }
 
     /// Returns an immediate value carried by this operation.
+    // Proptest generators for operations in crate::mast::node::basic_block_node::tests discriminate
+    // on this flag, please update them when you modify the semantics of this method.
     pub fn imm_value(&self) -> Option<Felt> {
         match *self {
             Self::Push(imm) => Some(imm),
-            Self::Emit(imm) => Some(imm.into()),
             _ => None,
         }
     }
@@ -659,9 +670,6 @@ impl fmt::Display for Operation {
             // ----- system operations ------------------------------------------------------------
             Self::Noop => write!(f, "noop"),
             Self::Assert(err_code) => write!(f, "assert({err_code})"),
-
-            Self::FmpAdd => write!(f, "fmpadd"),
-            Self::FmpUpdate => write!(f, "fmpupdate"),
 
             Self::SDepth => write!(f, "sdepth"),
             Self::Caller => write!(f, "caller"),
@@ -771,7 +779,7 @@ impl fmt::Display for Operation {
             Self::MStream => write!(f, "mstream"),
             Self::Pipe => write!(f, "pipe"),
 
-            Self::Emit(value) => write!(f, "emit({value})"),
+            Self::Emit => write!(f, "emit"),
 
             // ----- cryptographic operations -----------------------------------------------------
             Self::HPerm => write!(f, "hperm"),
@@ -783,6 +791,7 @@ impl fmt::Display for Operation {
             Self::HornerBase => write!(f, "horner_eval_base"),
             Self::HornerExt => write!(f, "horner_eval_ext"),
             Self::EvalCircuit => write!(f, "eval_circuit"),
+            Self::LogPrecompile => write!(f, "log_precompile"),
         }
     }
 }
@@ -799,14 +808,11 @@ impl Serializable for Operation {
                 err_code.write_into(target);
             },
             Operation::Push(value) => value.as_int().write_into(target),
-            Operation::Emit(value) => value.write_into(target),
 
             // Note: we explicitly write out all the operations so that whenever we make a
             // modification to the `Operation` enum, we get a compile error here. This
             // should help us remember to properly encode/decode each operation variant.
             Operation::Noop
-            | Operation::FmpAdd
-            | Operation::FmpUpdate
             | Operation::SDepth
             | Operation::Caller
             | Operation::Clk
@@ -862,6 +868,7 @@ impl Serializable for Operation {
             | Operation::SwapW2
             | Operation::SwapW3
             | Operation::SwapDW
+            | Operation::Emit
             | Operation::MovUp2
             | Operation::MovUp3
             | Operation::MovUp4
@@ -891,7 +898,8 @@ impl Serializable for Operation {
             | Operation::FriE2F4
             | Operation::HornerBase
             | Operation::HornerExt
-            | Operation::EvalCircuit => (),
+            | Operation::EvalCircuit
+            | Operation::LogPrecompile => (),
         }
     }
 }
@@ -907,7 +915,6 @@ impl Deserializable for Operation {
             OPCODE_INV => Self::Inv,
             OPCODE_INCR => Self::Incr,
             OPCODE_NOT => Self::Not,
-            OPCODE_FMPADD => Self::FmpAdd,
             OPCODE_MLOAD => Self::MLoad,
             OPCODE_SWAP => Self::Swap,
             OPCODE_CALLER => Self::Caller,
@@ -933,6 +940,7 @@ impl Deserializable for Operation {
             OPCODE_SWAPW2 => Self::SwapW2,
             OPCODE_SWAPW3 => Self::SwapW3,
             OPCODE_SWAPDW => Self::SwapDW,
+            OPCODE_EMIT => Self::Emit,
 
             OPCODE_ASSERT => Self::Assert(Felt::read_from(source)?),
             OPCODE_EQ => Self::Eq,
@@ -949,7 +957,6 @@ impl Deserializable for Operation {
             OPCODE_MLOADW => Self::MLoadW,
             OPCODE_MSTORE => Self::MStore,
             OPCODE_MSTOREW => Self::MStoreW,
-            OPCODE_FMPUPDATE => Self::FmpUpdate,
 
             OPCODE_PAD => Self::Pad,
             OPCODE_DUP0 => Self::Dup0,
@@ -989,15 +996,11 @@ impl Deserializable for Operation {
             OPCODE_DYNCALL => Self::Dyncall,
             OPCODE_HORNERBASE => Self::HornerBase,
             OPCODE_HORNEREXT => Self::HornerExt,
+            OPCODE_LOGPRECOMPILE => Self::LogPrecompile,
             OPCODE_EVALCIRCUIT => Self::EvalCircuit,
 
             OPCODE_MRUPDATE => Self::MrUpdate,
             OPCODE_PUSH => Self::Push(Felt::read_from(source)?),
-            OPCODE_EMIT => {
-                let value = source.read_u32()?;
-
-                Self::Emit(value)
-            },
             OPCODE_SYSCALL => Self::SysCall,
             OPCODE_CALL => Self::Call,
             OPCODE_END => Self::End,

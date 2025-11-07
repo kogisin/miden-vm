@@ -1,19 +1,27 @@
 use miden_crypto::{Felt, ONE, Word};
 
 use super::*;
-use crate::{Decorator, Operation};
+use crate::{
+    Decorator, Idx, IndexVec, Operation,
+    mast::{BasicBlockNode, MastNode, MastNodeErrorContext},
+};
 
 fn block_foo() -> MastNode {
-    MastNode::new_basic_block(vec![Operation::Mul, Operation::Add], None).unwrap()
+    BasicBlockNode::new(vec![Operation::Mul, Operation::Add], Vec::new())
+        .unwrap()
+        .into()
 }
 
 fn block_bar() -> MastNode {
-    MastNode::new_basic_block(vec![Operation::And, Operation::Eq], None).unwrap()
+    BasicBlockNode::new(vec![Operation::And, Operation::Eq], Vec::new())
+        .unwrap()
+        .into()
 }
 
 fn block_qux() -> MastNode {
-    MastNode::new_basic_block(vec![Operation::Swap, Operation::Push(ONE), Operation::Eq], None)
+    BasicBlockNode::new(vec![Operation::Swap, Operation::Push(ONE), Operation::Eq], Vec::new())
         .unwrap()
+        .into()
 }
 
 /// Asserts that the given forest contains exactly one node with the given digest.
@@ -57,37 +65,11 @@ fn assert_root_mapping(
 /// this assertion fails it'll be clear which exact call failed.
 fn assert_child_id_lt_parent_id(forest: &MastForest) -> Result<(), &str> {
     for (mast_node_id, node) in forest.nodes().iter().enumerate() {
-        match node {
-            MastNode::Join(join_node) => {
-                if !join_node.first().as_usize() < mast_node_id {
-                    return Err("join node first child id is not < parent id");
-                };
-                if !join_node.second().as_usize() < mast_node_id {
-                    return Err("join node second child id is not < parent id");
-                }
-            },
-            MastNode::Split(split_node) => {
-                if !split_node.on_true().as_usize() < mast_node_id {
-                    return Err("split node on true id is not < parent id");
-                }
-                if !split_node.on_false().as_usize() < mast_node_id {
-                    return Err("split node on false id is not < parent id");
-                }
-            },
-            MastNode::Loop(loop_node) => {
-                if !loop_node.body().as_usize() < mast_node_id {
-                    return Err("loop node body id is not < parent id");
-                }
-            },
-            MastNode::Call(call_node) => {
-                if !call_node.callee().as_usize() < mast_node_id {
-                    return Err("call node callee id is not < parent id");
-                }
-            },
-            MastNode::Block(_) => (),
-            MastNode::Dyn(_) => (),
-            MastNode::External(_) => (),
-        }
+        node.for_each_child(|child_id| {
+            if child_id.to_usize() >= mast_node_id {
+                panic!("child id {} is not < parent id {}", child_id.to_usize(), mast_node_id);
+            }
+        });
     }
 
     Ok(())
@@ -116,12 +98,12 @@ fn mast_forest_merge_remap() {
 
     assert_eq!(merged.nodes().len(), 4);
     assert_eq!(merged.nodes()[0], block_foo());
-    assert_matches!(&merged.nodes()[1], MastNode::Call(call_node) if call_node.callee().as_u32() == 0);
+    assert_matches!(&merged.nodes()[1], MastNode::Call(call_node) if 0u32 == u32::from(call_node.callee()));
     assert_eq!(merged.nodes()[2], block_bar());
-    assert_matches!(&merged.nodes()[3], MastNode::Call(call_node) if call_node.callee().as_u32() == 2);
+    assert_matches!(&merged.nodes()[3], MastNode::Call(call_node) if 2u32 == u32::from(call_node.callee()));
 
-    assert_eq!(root_maps.map_root(0, &id_call_a).unwrap().as_u32(), 1);
-    assert_eq!(root_maps.map_root(1, &id_call_b).unwrap().as_u32(), 3);
+    assert_eq!(u32::from(root_maps.map_root(0, &id_call_a).unwrap()), 1u32);
+    assert_eq!(u32::from(root_maps.map_root(1, &id_call_b).unwrap()), 3u32);
 
     assert_child_id_lt_parent_id(&merged).unwrap();
 }
@@ -192,11 +174,11 @@ fn mast_forest_merge_replace_external() {
     for (merged, root_map) in [(merged_ab, root_maps_ab), (merged_ba, root_maps_ba)] {
         assert_eq!(merged.nodes().len(), 2);
         assert_eq!(merged.nodes()[0], block_foo());
-        assert_matches!(&merged.nodes()[1], MastNode::Call(call_node) if call_node.callee().as_u32() == 0);
+        assert_matches!(&merged.nodes()[1], MastNode::Call(call_node) if 0u32 == u32::from(call_node.callee()));
         // The only root node should be the call node.
         assert_eq!(merged.roots.len(), 1);
-        assert_eq!(root_map.map_root(0, &id_call_a).unwrap().as_usize(), 1);
-        assert_eq!(root_map.map_root(1, &id_call_b).unwrap().as_usize(), 1);
+        assert_eq!(root_map.map_root(0, &id_call_a).unwrap().to_usize(), 1);
+        assert_eq!(root_map.map_root(1, &id_call_b).unwrap().to_usize(), 1);
         assert_child_id_lt_parent_id(&merged).unwrap();
     }
 }
@@ -344,7 +326,7 @@ fn mast_forest_merge_decorators() {
     foo_node_a.append_before_enter(&[deco1_a, deco2_a]);
     let id_foo_a = forest_a.add_node(foo_node_a).unwrap();
 
-    let mut loop_node_a = MastNode::new_loop(id_foo_a, &forest_a).unwrap();
+    let mut loop_node_a = LoopNode::new(id_foo_a, &forest_a).unwrap();
     loop_node_a.append_after_exit(&[deco0_a, deco2_a]);
     let id_loop_a = forest_a.add_node(loop_node_a).unwrap();
 
@@ -362,7 +344,7 @@ fn mast_forest_merge_decorators() {
     let id_foo_b = forest_b.add_node(foo_node_b).unwrap();
 
     // This loop node's decorators are different from the loop node in a.
-    let mut loop_node_b = MastNode::new_loop(id_foo_b, &forest_b).unwrap();
+    let mut loop_node_b = LoopNode::new(id_foo_b, &forest_b).unwrap();
     loop_node_b.append_after_exit(&[deco1_b, deco3_b]);
     let id_loop_b = forest_b.add_node(loop_node_b).unwrap();
 
@@ -402,7 +384,7 @@ fn mast_forest_merge_decorators() {
     };
 
     assert_eq!(
-        merged_foo_block.decorators().as_slice(),
+        &merged_foo_block.decorators().collect::<Vec<_>>()[..],
         &[(0, merged_deco1), (0, merged_deco2)]
     );
 
@@ -483,13 +465,17 @@ fn mast_forest_merge_external_node_reference_with_decorator() {
     .into_iter()
     .enumerate()
     {
-        let id_foo_a_fingerprint =
-            MastNodeFingerprint::from_mast_node(&forest_a, &BTreeMap::new(), &forest_a[id_foo_a]);
+        let empty_fingerprints = IndexVec::new();
+        let id_foo_a_fingerprint = MastNodeFingerprint::from_mast_node(
+            &forest_a,
+            &empty_fingerprints,
+            &forest_a[id_foo_a],
+        );
 
         let fingerprints: Vec<_> = merged
             .nodes()
             .iter()
-            .map(|node| MastNodeFingerprint::from_mast_node(&merged, &BTreeMap::new(), node))
+            .map(|node| MastNodeFingerprint::from_mast_node(&merged, &empty_fingerprints, node))
             .collect();
 
         assert_eq!(merged.nodes.len(), 1);
@@ -529,7 +515,7 @@ fn mast_forest_merge_external_node_with_decorator() {
     let deco1 = forest_a.add_decorator(trace1.clone()).unwrap();
     let deco2 = forest_a.add_decorator(trace2.clone()).unwrap();
 
-    let mut external_node_a = MastNode::new_external(block_foo().digest());
+    let mut external_node_a = ExternalNode::new(block_foo().digest());
     external_node_a.append_before_enter(&[deco1]);
     external_node_a.append_after_exit(&[deco2]);
     let id_external_a = forest_a.add_node(external_node_a).unwrap();
@@ -551,13 +537,17 @@ fn mast_forest_merge_external_node_with_decorator() {
     {
         assert_eq!(merged.nodes.len(), 1);
 
-        let id_foo_b_fingerprint =
-            MastNodeFingerprint::from_mast_node(&forest_a, &BTreeMap::new(), &forest_b[id_foo_b]);
+        let empty_fingerprints = IndexVec::new();
+        let id_foo_b_fingerprint = MastNodeFingerprint::from_mast_node(
+            &forest_a,
+            &empty_fingerprints,
+            &forest_b[id_foo_b],
+        );
 
         let fingerprints: Vec<_> = merged
             .nodes()
             .iter()
-            .map(|node| MastNodeFingerprint::from_mast_node(&merged, &BTreeMap::new(), node))
+            .map(|node| MastNodeFingerprint::from_mast_node(&merged, &empty_fingerprints, node))
             .collect();
 
         // Block foo should be unmodified.
@@ -596,7 +586,7 @@ fn mast_forest_merge_external_node_and_referenced_node_have_decorators() {
     // Build Forest A
     let deco1_a = forest_a.add_decorator(trace1.clone()).unwrap();
 
-    let mut external_node_a = MastNode::new_external(block_foo().digest());
+    let mut external_node_a = ExternalNode::new(block_foo().digest());
     external_node_a.append_before_enter(&[deco1_a]);
     let id_external_a = forest_a.add_node(external_node_a).unwrap();
 
@@ -621,13 +611,17 @@ fn mast_forest_merge_external_node_and_referenced_node_have_decorators() {
     {
         assert_eq!(merged.nodes.len(), 1);
 
-        let id_foo_b_fingerprint =
-            MastNodeFingerprint::from_mast_node(&forest_b, &BTreeMap::new(), &forest_b[id_foo_b]);
+        let empty_fingerprints = IndexVec::new();
+        let id_foo_b_fingerprint = MastNodeFingerprint::from_mast_node(
+            &forest_b,
+            &empty_fingerprints,
+            &forest_b[id_foo_b],
+        );
 
         let fingerprints: Vec<_> = merged
             .nodes()
             .iter()
-            .map(|node| MastNodeFingerprint::from_mast_node(&merged, &BTreeMap::new(), node))
+            .map(|node| MastNodeFingerprint::from_mast_node(&merged, &empty_fingerprints, node))
             .collect();
 
         // Block foo should be unmodified.
@@ -669,12 +663,12 @@ fn mast_forest_merge_multiple_external_nodes_with_decorator() {
     let deco1_a = forest_a.add_decorator(trace1.clone()).unwrap();
     let deco2_a = forest_a.add_decorator(trace2.clone()).unwrap();
 
-    let mut external_node_a = MastNode::new_external(block_foo().digest());
+    let mut external_node_a = ExternalNode::new(block_foo().digest());
     external_node_a.append_before_enter(&[deco1_a]);
     external_node_a.append_after_exit(&[deco2_a]);
     let id_external_a = forest_a.add_node(external_node_a).unwrap();
 
-    let mut external_node_b = MastNode::new_external(block_foo().digest());
+    let mut external_node_b = ExternalNode::new(block_foo().digest());
     external_node_b.append_before_enter(&[deco1_a]);
     let id_external_b = forest_a.add_node(external_node_b).unwrap();
 
@@ -699,13 +693,17 @@ fn mast_forest_merge_multiple_external_nodes_with_decorator() {
     {
         assert_eq!(merged.nodes.len(), 1);
 
-        let id_foo_b_fingerprint =
-            MastNodeFingerprint::from_mast_node(&forest_a, &BTreeMap::new(), &forest_b[id_foo_b]);
+        let empty_fingerprints = IndexVec::new();
+        let id_foo_b_fingerprint = MastNodeFingerprint::from_mast_node(
+            &forest_a,
+            &empty_fingerprints,
+            &forest_b[id_foo_b],
+        );
 
         let fingerprints: Vec<_> = merged
             .nodes()
             .iter()
-            .map(|node| MastNodeFingerprint::from_mast_node(&merged, &BTreeMap::new(), node))
+            .map(|node| MastNodeFingerprint::from_mast_node(&merged, &empty_fingerprints, node))
             .collect();
 
         // Block foo should be unmodified.

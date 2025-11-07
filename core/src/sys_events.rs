@@ -1,33 +1,9 @@
 use core::fmt;
 
+use crate::{EventId, EventName};
+
 // SYSTEM EVENTS
 // ================================================================================================
-
-// Randomly generated constant values for the VM's system events. All values were sampled
-// between 0 and 2^32.
-pub use constants::*;
-
-#[rustfmt::skip]
-mod constants {
-    pub const EVENT_MERKLE_NODE_MERGE: u32            = 276124218;
-    pub const EVENT_MERKLE_NODE_TO_STACK: u32         = 361943238;
-    pub const EVENT_MAP_VALUE_TO_STACK: u32           = 574478993;
-    pub const EVENT_MAP_VALUE_TO_STACK_N: u32         = 630847990;
-    pub const EVENT_HAS_MAP_KEY: u32                  = 652777600;
-    pub const EVENT_U64_DIV: u32                      = 678156251;
-    pub const EVENT_EXT2_INV: u32                     = 1251967401;
-    pub const EVENT_SMT_PEEK: u32                     = 1889584556;
-    pub const EVENT_U32_CLZ: u32                      = 1951932030;
-    pub const EVENT_U32_CTZ: u32                      = 2008979519;
-    pub const EVENT_U32_CLO: u32                      = 2032895094;
-    pub const EVENT_U32_CTO: u32                      = 2083700134;
-    pub const EVENT_ILOG2: u32                        = 2297972669;
-    pub const EVENT_MEM_TO_MAP: u32                   = 2389394361;
-    pub const EVENT_HDWORD_TO_MAP: u32                = 2391452729;
-    pub const EVENT_HDWORD_TO_MAP_WITH_DOMAIN: u32    = 2822590340;
-    pub const EVENT_HPERM_TO_MAP: u32                 = 3297060969;
-    pub const EVENT_FALCON_DIV: u32                   = 3419226155;
-}
 
 /// Defines a set of actions which can be initiated from the VM to inject new data into the advice
 /// provider.
@@ -37,7 +13,13 @@ mod constants {
 ///
 /// All actions, except for `MerkleNodeMerge`, `Ext2Inv` and `UpdateMerkleNode` can be invoked
 /// directly from Miden assembly via dedicated instructions.
+///
+/// System event IDs are derived from blake3-hashing their names (prefixed with "sys::").
+///
+/// The enum variant order matches the indices in SYSTEM_EVENT_LOOKUP, allowing efficient const
+/// lookup via `to_event_id()`. The discriminants are implicitly 0, 1, 2, ... 15.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u8)]
 pub enum SystemEvent {
     // MERKLE STORE EVENTS
     // --------------------------------------------------------------------------------------------
@@ -115,39 +97,6 @@ pub enum SystemEvent {
     ///   Advice stack:  [has_mapkey, ...]
     HasMapKey,
 
-    /// Pushes the result of [u64] division (both the quotient and the remainder) onto the advice
-    /// stack.
-    ///
-    /// Inputs:
-    ///   Operand stack: [b1, b0, a1, a0, ...]
-    ///   Advice stack: [...]
-    ///
-    /// Outputs:
-    ///   Operand stack: [b1, b0, a1, a0, ...]
-    ///   Advice stack: [q0, q1, r0, r1, ...]
-    ///
-    /// Where (a0, a1) and (b0, b1) are the 32-bit limbs of the dividend and the divisor
-    /// respectively (with a0 representing the 32 lest significant bits and a1 representing the
-    /// 32 most significant bits). Similarly, (q0, q1) and (r0, r1) represent the quotient and
-    /// the remainder respectively.
-    U64Div,
-
-    /// Pushes the result of divison (both the quotient and the remainder) of a [u64] by the Falcon
-    /// prime (M = 12289) onto the advice stack.
-    ///
-    /// Inputs:
-    ///   Operand stack: [a1, a0, ...]
-    ///   Advice stack: [...]
-    ///
-    /// Outputs:
-    ///   Operand stack: [a1, a0, ...]
-    ///   Advice stack: [q0, q1, r, ...]
-    ///
-    /// Where (a0, a1) are the 32-bit limbs of the dividend (with a0 representing the 32 least
-    /// significant bits and a1 representing the 32 most significant bits).
-    /// Similarly, (q0, q1) represent the quotient and r the remainder.
-    FalconDiv,
-
     /// Given an element in a quadratic extension field on the top of the stack (i.e., a0, b1),
     /// computes its multiplicative inverse and push the result onto the advice stack.
     ///
@@ -162,21 +111,6 @@ pub enum SystemEvent {
     /// Where (b0, b1) is the multiplicative inverse of the extension field element (a0, a1) at the
     /// top of the stack.
     Ext2Inv,
-
-    /// Pushes onto the advice stack the value associated with the specified key in a Sparse
-    /// Merkle Tree defined by the specified root.
-    ///
-    /// If no value was previously associated with the specified key, [ZERO; 4] is pushed onto
-    /// the advice stack.
-    ///
-    /// Inputs:
-    ///   Operand stack: [KEY, ROOT, ...]
-    ///   Advice stack: [...]
-    ///
-    /// Outputs:
-    ///   Operand stack: [KEY, ROOT, ...]
-    ///   Advice stack: [VALUE, ...]
-    SmtPeek,
 
     /// Pushes the number of the leading zeros of the top stack element onto the advice stack.
     ///
@@ -262,7 +196,7 @@ pub enum SystemEvent {
     /// Where KEY is computed as hash(A || B, domain=0)
     HdwordToMap,
 
-    /// Reads two word from the operand stack and inserts them into the advice map under the key
+    /// Reads two words from the operand stack and inserts them into the advice map under the key
     /// defined by the hash of these words (using `d` as the domain).
     ///
     /// Inputs:
@@ -275,6 +209,23 @@ pub enum SystemEvent {
     ///
     /// Where KEY is computed as hash(A || B, d).
     HdwordToMapWithDomain,
+
+    /// Reads four words from the operand stack and inserts them into the advice map under the key
+    /// defined by the hash of these words.
+    ///
+    /// Inputs:
+    ///   Operand stack: [D, C, B, A, ...]
+    ///   Advice map: {...}
+    ///
+    /// Outputs:
+    ///   Operand stack: [D, C, B, A, ...]
+    ///   Advice map: {KEY: [A', B', C', D'])}
+    ///
+    /// Where:
+    /// - KEY is the hash computed as hash(hash(hash(A || B) || C) || D) with domain=0.
+    /// - A' (and other words with `'`) is the A word with the reversed element order: A = [a3, a2,
+    ///   a1, a0], A' = [a0, a1, a2, a3].
+    HqwordToMap,
 
     /// Reads three words from the operand stack and inserts the top two words into the advice map
     /// under the key defined by applying an RPO permutation to all three words.
@@ -293,53 +244,79 @@ pub enum SystemEvent {
 }
 
 impl SystemEvent {
-    pub fn into_event_id(self) -> u32 {
-        match self {
-            SystemEvent::MerkleNodeMerge => EVENT_MERKLE_NODE_MERGE,
-            SystemEvent::MerkleNodeToStack => EVENT_MERKLE_NODE_TO_STACK,
-            SystemEvent::MapValueToStack => EVENT_MAP_VALUE_TO_STACK,
-            SystemEvent::MapValueToStackN => EVENT_MAP_VALUE_TO_STACK_N,
-            SystemEvent::HasMapKey => EVENT_HAS_MAP_KEY,
-            SystemEvent::U64Div => EVENT_U64_DIV,
-            SystemEvent::FalconDiv => EVENT_FALCON_DIV,
-            SystemEvent::Ext2Inv => EVENT_EXT2_INV,
-            SystemEvent::SmtPeek => EVENT_SMT_PEEK,
-            SystemEvent::U32Clz => EVENT_U32_CLZ,
-            SystemEvent::U32Ctz => EVENT_U32_CTZ,
-            SystemEvent::U32Clo => EVENT_U32_CLO,
-            SystemEvent::U32Cto => EVENT_U32_CTO,
-            SystemEvent::ILog2 => EVENT_ILOG2,
-            SystemEvent::MemToMap => EVENT_MEM_TO_MAP,
-            SystemEvent::HdwordToMap => EVENT_HDWORD_TO_MAP,
-            SystemEvent::HdwordToMapWithDomain => EVENT_HDWORD_TO_MAP_WITH_DOMAIN,
-            SystemEvent::HpermToMap => EVENT_HPERM_TO_MAP,
+    /// Attempts to convert an EventId into a SystemEvent by looking it up in the const table.
+    ///
+    /// Returns `Some(SystemEvent)` if the ID matches a known system event, `None` otherwise.
+    /// This uses a const lookup table with hardcoded EventIds, avoiding runtime hash computation.
+    pub const fn from_event_id(event_id: EventId) -> Option<Self> {
+        let lookup = Self::LOOKUP;
+        let mut i = 0;
+        while i < lookup.len() {
+            if lookup[i].id.as_u64() == event_id.as_u64() {
+                return Some(lookup[i].event);
+            }
+            i += 1;
         }
+        None
     }
 
-    /// Returns a system event corresponding to the specified event ID, or `None` if the event
-    /// ID is not recognized.
-    pub fn from_event_id(event_id: u32) -> Option<Self> {
-        match event_id {
-            EVENT_MERKLE_NODE_MERGE => Some(SystemEvent::MerkleNodeMerge),
-            EVENT_MERKLE_NODE_TO_STACK => Some(SystemEvent::MerkleNodeToStack),
-            EVENT_MAP_VALUE_TO_STACK => Some(SystemEvent::MapValueToStack),
-            EVENT_MAP_VALUE_TO_STACK_N => Some(SystemEvent::MapValueToStackN),
-            EVENT_HAS_MAP_KEY => Some(SystemEvent::HasMapKey),
-            EVENT_U64_DIV => Some(SystemEvent::U64Div),
-            EVENT_FALCON_DIV => Some(SystemEvent::FalconDiv),
-            EVENT_EXT2_INV => Some(SystemEvent::Ext2Inv),
-            EVENT_SMT_PEEK => Some(SystemEvent::SmtPeek),
-            EVENT_U32_CLZ => Some(SystemEvent::U32Clz),
-            EVENT_U32_CTZ => Some(SystemEvent::U32Ctz),
-            EVENT_U32_CLO => Some(SystemEvent::U32Clo),
-            EVENT_U32_CTO => Some(SystemEvent::U32Cto),
-            EVENT_ILOG2 => Some(SystemEvent::ILog2),
-            EVENT_MEM_TO_MAP => Some(SystemEvent::MemToMap),
-            EVENT_HDWORD_TO_MAP => Some(SystemEvent::HdwordToMap),
-            EVENT_HDWORD_TO_MAP_WITH_DOMAIN => Some(SystemEvent::HdwordToMapWithDomain),
-            EVENT_HPERM_TO_MAP => Some(SystemEvent::HpermToMap),
-            _ => None,
+    /// Attempts to convert a name into a SystemEvent by looking it up in the const table.
+    ///
+    /// Returns `Some(SystemEvent)` if the name matches a known system event, `None` otherwise.
+    /// This uses const string comparison against the lookup table.
+    pub const fn from_name(name: &str) -> Option<Self> {
+        let lookup = Self::LOOKUP;
+        let mut i = 0;
+        while i < lookup.len() {
+            if str_eq(name, lookup[i].name) {
+                return Some(lookup[i].event);
+            }
+            i += 1;
         }
+        None
+    }
+
+    /// Returns the human-readable name of this system event as an [`EventName`].
+    ///
+    /// System event names are prefixed with `sys::` to distinguish them from user-defined events.
+    pub const fn event_name(&self) -> EventName {
+        EventName::new(Self::LOOKUP[*self as usize].name)
+    }
+
+    /// Returns the [`EventId`] for this system event.
+    ///
+    /// The ID is looked up from the const LOOKUP table using the enum's discriminant
+    /// as the index. The discriminants are explicitly set to match the array indices.
+    pub const fn event_id(&self) -> EventId {
+        Self::LOOKUP[*self as usize].id
+    }
+
+    /// Returns an array of all system event variants.
+    pub const fn all() -> [Self; Self::COUNT] {
+        [
+            Self::MerkleNodeMerge,
+            Self::MerkleNodeToStack,
+            Self::MapValueToStack,
+            Self::MapValueToStackN,
+            Self::HasMapKey,
+            Self::Ext2Inv,
+            Self::U32Clz,
+            Self::U32Ctz,
+            Self::U32Clo,
+            Self::U32Cto,
+            Self::ILog2,
+            Self::MemToMap,
+            Self::HdwordToMap,
+            Self::HdwordToMapWithDomain,
+            Self::HqwordToMap,
+            Self::HpermToMap,
+        ]
+    }
+}
+
+impl From<SystemEvent> for EventName {
+    fn from(system_event: SystemEvent) -> Self {
+        system_event.event_name()
     }
 }
 
@@ -351,25 +328,222 @@ impl crate::prettier::PrettyPrint for SystemEvent {
 
 impl fmt::Display for SystemEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MerkleNodeMerge => write!(f, "merkle_node_merge"),
-            Self::MerkleNodeToStack => write!(f, "merkle_node_to_stack"),
-            Self::MapValueToStack => write!(f, "map_value_to_stack"),
-            Self::MapValueToStackN => write!(f, "map_value_to_stack_with_len"),
-            Self::HasMapKey => write!(f, "has_key_in_map"),
-            Self::U64Div => write!(f, "div_u64"),
-            Self::FalconDiv => write!(f, "falcon_div"),
-            Self::Ext2Inv => write!(f, "ext2_inv"),
-            Self::SmtPeek => write!(f, "smt_peek"),
-            Self::U32Clz => write!(f, "u32clz"),
-            Self::U32Ctz => write!(f, "u32ctz"),
-            Self::U32Clo => write!(f, "u32clo"),
-            Self::U32Cto => write!(f, "u32cto"),
-            Self::ILog2 => write!(f, "ilog2"),
-            Self::MemToMap => write!(f, "mem_to_map"),
-            Self::HdwordToMap => write!(f, "hdword_to_map"),
-            Self::HdwordToMapWithDomain => write!(f, "hdword_to_map_with_domain"),
-            Self::HpermToMap => write!(f, "hperm_to_map"),
+        const PREFIX_LEN: usize = "sys::".len();
+
+        let (_prefix, rest) = Self::LOOKUP[*self as usize].name.split_at(PREFIX_LEN);
+        write!(f, "{rest}")
+    }
+}
+
+// LOOKUP TABLE
+// ================================================================================================
+
+/// An entry in the system event lookup table, containing all metadata for a system event.
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct SystemEventEntry {
+    /// The unique event ID (hash of the name)
+    pub id: EventId,
+    /// The system event variant
+    pub event: SystemEvent,
+    /// The full event name string (e.g., "sys::merkle_node_merge")
+    pub name: &'static str,
+}
+
+impl SystemEvent {
+    /// The total number of system events.
+    pub const COUNT: usize = 16;
+
+    /// Lookup table mapping system events to their metadata.
+    ///
+    /// The enum variant order matches the indices in this table, allowing efficient const
+    /// lookup via array indexing using discriminants.
+    const LOOKUP: [SystemEventEntry; Self::COUNT] = [
+        SystemEventEntry {
+            id: EventId::from_u64(7243907139105902342),
+            event: SystemEvent::MerkleNodeMerge,
+            name: "sys::merkle_node_merge",
+        },
+        SystemEventEntry {
+            id: EventId::from_u64(6873007751276594108),
+            event: SystemEvent::MerkleNodeToStack,
+            name: "sys::merkle_node_to_stack",
+        },
+        SystemEventEntry {
+            id: EventId::from_u64(17843484659000820118),
+            event: SystemEvent::MapValueToStack,
+            name: "sys::map_value_to_stack",
+        },
+        SystemEventEntry {
+            id: EventId::from_u64(7354377147644073171),
+            event: SystemEvent::MapValueToStackN,
+            name: "sys::map_value_to_stack_n",
+        },
+        SystemEventEntry {
+            id: EventId::from_u64(5642583036089175977),
+            event: SystemEvent::HasMapKey,
+            name: "sys::has_map_key",
+        },
+        SystemEventEntry {
+            id: EventId::from_u64(9660728691489438960),
+            event: SystemEvent::Ext2Inv,
+            name: "sys::ext2_inv",
+        },
+        SystemEventEntry {
+            id: EventId::from_u64(1503707361178382932),
+            event: SystemEvent::U32Clz,
+            name: "sys::u32_clz",
+        },
+        SystemEventEntry {
+            id: EventId::from_u64(10656887096526143429),
+            event: SystemEvent::U32Ctz,
+            name: "sys::u32_ctz",
+        },
+        SystemEventEntry {
+            id: EventId::from_u64(12846584985739176048),
+            event: SystemEvent::U32Clo,
+            name: "sys::u32_clo",
+        },
+        SystemEventEntry {
+            id: EventId::from_u64(6773574803673468616),
+            event: SystemEvent::U32Cto,
+            name: "sys::u32_cto",
+        },
+        SystemEventEntry {
+            id: EventId::from_u64(7444351342957461231),
+            event: SystemEvent::ILog2,
+            name: "sys::ilog2",
+        },
+        SystemEventEntry {
+            id: EventId::from_u64(5768534446586058686),
+            event: SystemEvent::MemToMap,
+            name: "sys::mem_to_map",
+        },
+        SystemEventEntry {
+            id: EventId::from_u64(5988159172915333521),
+            event: SystemEvent::HdwordToMap,
+            name: "sys::hdword_to_map",
+        },
+        SystemEventEntry {
+            id: EventId::from_u64(6143777601072385586),
+            event: SystemEvent::HdwordToMapWithDomain,
+            name: "sys::hdword_to_map_with_domain",
+        },
+        SystemEventEntry {
+            id: EventId::from_u64(11723176702659679401),
+            event: SystemEvent::HqwordToMap,
+            name: "sys::hqword_to_map",
+        },
+        SystemEventEntry {
+            id: EventId::from_u64(6190830263511605775),
+            event: SystemEvent::HpermToMap,
+            name: "sys::hperm_to_map",
+        },
+    ];
+}
+
+// HELPERS
+// ================================================================================================
+
+/// Const-compatible string equality check.
+const fn str_eq(a: &str, b: &str) -> bool {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+
+    if a_bytes.len() != b_bytes.len() {
+        return false;
+    }
+
+    let mut i = 0;
+    while i < a_bytes.len() {
+        if a_bytes[i] != b_bytes[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_system_events() {
+        // Comprehensive test verifying consistency between SystemEvent::all() and
+        // SystemEvent::LOOKUP. This ensures all() and LOOKUP are in sync, lookup table has
+        // correct IDs/names, and all variants are covered.
+
+        // Verify lengths match COUNT
+        assert_eq!(SystemEvent::all().len(), SystemEvent::COUNT);
+        assert_eq!(SystemEvent::LOOKUP.len(), SystemEvent::COUNT);
+
+        // Iterate through both all() and LOOKUP together, checking all invariants
+        for (i, (event, entry)) in
+            SystemEvent::all().iter().zip(SystemEvent::LOOKUP.iter()).enumerate()
+        {
+            // Verify LOOKUP entry matches the event at the same index
+            assert_eq!(
+                entry.event, *event,
+                "LOOKUP[{}].event ({:?}) doesn't match all()[{}] ({:?})",
+                i, entry.event, i, event
+            );
+
+            // Verify LOOKUP entry ID matches the computed ID
+            let computed_id = event.event_id();
+            assert_eq!(
+                entry.id,
+                computed_id,
+                "LOOKUP[{}].id is EventId::from_u64({}), but {:?}.to_event_id() returns EventId::from_u64({})",
+                i,
+                entry.id.as_u64(),
+                event,
+                computed_id.as_u64()
+            );
+
+            // Verify name has correct "sys::" prefix
+            assert!(
+                entry.name.starts_with("sys::"),
+                "SystemEvent name should start with 'sys::': {}",
+                entry.name
+            );
+
+            // Verify from_event_id lookup works
+            let looked_up =
+                SystemEvent::from_event_id(entry.id).expect("SystemEvent should be found by ID");
+            assert_eq!(looked_up, *event);
+
+            // Verify from_name lookup works
+            let looked_up_by_name =
+                SystemEvent::from_name(entry.name).expect("SystemEvent should be found by name");
+            assert_eq!(looked_up_by_name, *event);
+
+            // Verify EventName conversion works
+            let event_name = event.event_name();
+            assert_eq!(event_name.as_str(), entry.name);
+            assert!(SystemEvent::from_name(event_name.as_str()).is_some());
+            let event_name_from_into: EventName = (*event).into();
+            assert_eq!(event_name_from_into.as_str(), entry.name);
+            assert!(SystemEvent::from_name(event_name_from_into.as_str()).is_some());
+
+            // Exhaustive match to ensure compile-time error when adding new variants
+            match event {
+                SystemEvent::MerkleNodeMerge
+                | SystemEvent::MerkleNodeToStack
+                | SystemEvent::MapValueToStack
+                | SystemEvent::MapValueToStackN
+                | SystemEvent::HasMapKey
+                | SystemEvent::Ext2Inv
+                | SystemEvent::U32Clz
+                | SystemEvent::U32Ctz
+                | SystemEvent::U32Clo
+                | SystemEvent::U32Cto
+                | SystemEvent::ILog2
+                | SystemEvent::MemToMap
+                | SystemEvent::HdwordToMap
+                | SystemEvent::HdwordToMapWithDomain
+                | SystemEvent::HqwordToMap
+                | SystemEvent::HpermToMap => {},
+            }
         }
     }
 }

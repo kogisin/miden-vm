@@ -292,7 +292,7 @@ impl<E: FieldElement> OpFlags<E> {
             + degree5_op_flags[1] // MPVERIFY
             + degree5_op_flags[6] // SPAN
             + degree5_op_flags[7] // JOIN
-            + degree5_op_flags[10] // EMIT
+            + degree7_op_flags[31] // EMIT
             + degree4_op_flags[6] // RESPAN
             + degree4_op_flags[7] // HALT
             + degree4_op_flags[3] // CALL
@@ -487,12 +487,6 @@ impl<E: FieldElement> OpFlags<E> {
     #[inline(always)]
     pub fn not(&self) -> E {
         self.degree7_op_flags[get_op_index(Operation::Not.op_code())]
-    }
-
-    /// Operation Flag of FMPADD operation.
-    #[inline(always)]
-    pub fn fmpadd(&self) -> E {
-        self.degree7_op_flags[get_op_index(Operation::FmpAdd.op_code())]
     }
 
     /// Operation Flag of MLOAD operation.
@@ -717,12 +711,6 @@ impl<E: FieldElement> OpFlags<E> {
     #[inline(always)]
     pub fn mstorew(&self) -> E {
         self.degree7_op_flags[get_op_index(Operation::MStoreW.op_code())]
-    }
-
-    /// Operation Flag of FMPUPDATE operation.
-    #[inline(always)]
-    pub fn fmpupdate(&self) -> E {
-        self.degree7_op_flags[get_op_index(Operation::FmpUpdate.op_code())]
     }
 
     // ------ Degree 7 operations with right shift ------------------------------------------------

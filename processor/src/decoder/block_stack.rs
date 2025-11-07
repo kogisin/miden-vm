@@ -7,7 +7,7 @@ use crate::system::ContextId;
 // ================================================================================================
 
 /// Keeps track of code blocks which are currently being executed by the VM.
-#[derive(Default)]
+#[derive(Debug, Default, Clone)]
 pub struct BlockStack {
     blocks: Vec<BlockInfo>,
 }
@@ -83,6 +83,11 @@ impl BlockStack {
         block
     }
 
+    /// Returns true if the block stack is empty.
+    pub fn is_empty(&self) -> bool {
+        self.blocks.is_empty()
+    }
+
     /// Returns a reference to a block at the top of the stack.
     pub fn peek(&self) -> &BlockInfo {
         self.blocks.last().expect("block stack is empty")
@@ -98,7 +103,7 @@ impl BlockStack {
 // ================================================================================================
 
 /// Contains basic information about a code block.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BlockInfo {
     pub addr: Felt,
     block_type: BlockType,
@@ -154,8 +159,6 @@ pub struct ExecutionContextInfo {
     /// Hash of the function which initiated execution of the block's parent. If the parent is a
     /// root context, this will be set to [ZERO; 4].
     pub parent_fn_hash: Word,
-    /// Value of free memory pointer right before a CALL instruction is executed.
-    pub parent_fmp: Felt,
     /// Depth of the operand stack right before a CALL operation is executed.
     pub parent_stack_depth: u32,
     /// Address of the top row in the overflow table right before a CALL operations is executed.
@@ -167,14 +170,12 @@ impl ExecutionContextInfo {
     pub fn new(
         parent_ctx: ContextId,
         parent_fn_hash: Word,
-        parent_fmp: Felt,
         parent_stack_depth: u32,
         parent_next_overflow_addr: Felt,
     ) -> Self {
         Self {
             parent_fn_hash,
             parent_ctx,
-            parent_fmp,
             parent_stack_depth,
             parent_next_overflow_addr,
         }
@@ -194,5 +195,5 @@ pub enum BlockType {
     Dyn,
     Dyncall,
     SysCall,
-    Span,
+    BasicBlock,
 }

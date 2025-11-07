@@ -1,8 +1,8 @@
 [package]
 name = "miden-processor"
-version = "0.17.1"
+version.workspace = true
 description = "Miden VM processor"
-documentation = "https://docs.rs/miden-processor/0.17.1"
+documentation = "https://docs.rs/miden-processor"
 readme = "README.md"
 categories = ["emulators", "no-std"]
 keywords = ["miden", "virtual-machine"]
@@ -12,6 +12,7 @@ homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 edition.workspace = true
+exclude = ["*.snap"]
 
 [lib]
 bench = false
@@ -27,7 +28,7 @@ std = [
     "winter-prover/std",
     "thiserror/std",
 ]
-testing = ["miden-air/testing", "tokio"]
+testing = ["miden-air/testing"]
 # Removes proper error context from the error messages. Enable in production builds that need
 # maximal performance.
 no_err_ctx = []
@@ -35,22 +36,27 @@ no_err_ctx = []
 bus-debugger = ["testing", "miden-air/testing"]
 
 [dependencies]
+# Miden dependencies
 miden-air.workspace = true
 miden-core.workspace = true
 miden-debug-types.workspace = true
 miden-utils-diagnostics.workspace = true
+miden-utils-indexing.workspace = true
+
+# External dependencies
+paste.workspace = true
+rayon = { version = "1.10", default-features = false }
 tracing.workspace = true
 thiserror.workspace = true
-# For `testing`
-tokio = { version = "1.46", default-features = false, features = ["rt"], optional = true }
+tokio = { workspace = true, features = ["rt"] }
 winter-prover.workspace = true
+itertools = { version = "0.14", default-features = false, features = ["use_alloc"] }
 
 [dev-dependencies]
 miden-assembly.workspace = true
 miden-utils-testing.workspace = true
-logtest = { version = "2.0", default-features = false }
-pretty_assertions = "1.4"
-rstest = { version = "0.25" }
-tokio = { version = "1.46", default-features = false, features = ["rt"] }
+insta.workspace = true
+pretty_assertions = { version = "1.4" }
+rstest = { version = "0.26" }
 winter-fri.workspace = true
 winter-utils.workspace = true

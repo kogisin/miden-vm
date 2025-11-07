@@ -1,8 +1,8 @@
 [package]
 name = "miden-core"
-version = "0.17.1"
+version.workspace = true
 description = "Miden VM core components"
-documentation = "https://docs.rs/miden-core/0.17.1"
+documentation = "https://docs.rs/miden-core"
 readme = "README.md"
 categories = ["emulators", "no-std"]
 keywords = ["instruction-set", "miden", "program"]
@@ -12,10 +12,16 @@ homepage.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 edition.workspace = true
+exclude = ["*.snap"]
 
 [lib]
 bench = false
 doctest = false
+
+[[bench]]
+name = "mast_forest_merge"
+required-features = ["arbitrary"]
+harness = false
 
 [features]
 default = ["std"]
@@ -23,22 +29,43 @@ std = [
     "miden-crypto/std",
     "miden-debug-types/std",
     "miden-formatting/std",
+    "miden-utils-indexing/std",
     "thiserror/std",
     "winter-math/std",
     "winter-utils/std",
 ]
-serde = ["miden-crypto/serde", "miden-debug-types/serde", "winter-math/serde"]
+serde = [
+    "dep:serde",
+    "miden-crypto/serde",
+    "miden-debug-types/serde",
+    "miden-utils-indexing/serde",
+    "winter-math/serde",
+]
+arbitrary = ["dep:proptest", "dep:proptest-derive"]
+testing = ["arbitrary" ]
 
 [dependencies]
+# Miden dependencies
 miden-crypto.workspace = true
 miden-debug-types.workspace = true
 miden-formatting.workspace = true
+miden-utils-indexing.workspace = true
+
+# External dependencies
+enum_dispatch = { version =  "0.3" }
 num-derive = { version = "0.4", default-features = false }
 num-traits = { version = "0.2", default-features = false }
+proptest = { workspace = true, optional = true }
+proptest-derive = { workspace = true, optional = true }
+serde = { workspace = true, optional = true, features = ["derive"] }
 thiserror.workspace = true
 winter-math.workspace = true
 winter-utils.workspace = true
 
 [dev-dependencies]
+criterion = { workspace = true }
+insta.workspace = true
+miden-test-serde-macros.workspace = true
 proptest.workspace = true
+serde_json = { workspace = true }
 winter-rand-utils.workspace = true

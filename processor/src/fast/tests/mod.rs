@@ -2,212 +2,96 @@ use alloc::{string::ToString, sync::Arc};
 
 use miden_air::ExecutionOptions;
 use miden_assembly::{Assembler, DefaultSourceManager};
-use miden_core::{Kernel, StackInputs, assert_matches};
+use miden_core::{
+    Decorator, Kernel, ONE, Operation, StackInputs, assert_matches,
+    mast::{BasicBlockNode, ExternalNode, MastForest},
+};
+use miden_utils_testing::build_test;
 use rstest::rstest;
 
 use super::*;
-use crate::{DefaultHost, Process, system::FMP_MAX};
+use crate::{DefaultHost, Process};
 
 mod advice_provider;
 mod all_ops;
+mod fast_decorator_execution_tests;
 mod masm_consistency;
 mod memory;
 
-/// Makes sure that the bounds checking fails when expected.
+/// Ensures that the stack is correctly reset in the buffer when the stack is reset in the buffer
+/// as a result of underflow.
+///
+/// Also checks that 0s are correctly pulled from the stack overflow table when it's empty.
 #[test]
-fn test_stack_underflow_and_overflow_bounds_failure() {
-    let mut host = DefaultHost::default();
+fn test_reset_stack_in_buffer_from_drop() {
+    let asm = format!(
+        "
+    begin
+        repeat.{}
+            movup.15 assertz
+        end
+    end
+    ",
+        INITIAL_STACK_TOP_IDX * 5
+    );
 
-    // Test underflow
-    {
-        // program 1: just enough drops as to not underflow, and then some swaps which don't change
-        // stack size. Although theoretically we could allow operations that don't change the stack
-        // size when just at the boundary of underflow, our current implementation is slightly
-        // conservative and doesn't allow it. Hence in this program, we drop enough times to reach 1
-        // from the underflow boundary, and then test that multiple swaps are allowed.
-        const NUM_DROPS_NO_UNDERFLOW_SWAPS_ALLOWED: usize =
-            INITIAL_STACK_TOP_IDX - MIN_STACK_DEPTH - 1;
-        let ops = {
-            let mut ops = vec![Operation::Drop; NUM_DROPS_NO_UNDERFLOW_SWAPS_ALLOWED];
-            ops.extend(vec![Operation::Swap; 25]);
+    let initial_stack: [u64; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
-            ops
-        };
-        let program_no_underflow = simple_program_with_ops(ops);
-        let result = FastProcessor::new(&[]).execute_sync(&program_no_underflow, &mut host);
-        assert!(result.is_ok());
+    // we expect the final stack to be the initial stack unchanged; we reverse since in
+    // `build_test!`, we call `StackInputs::new()`, which reverses the input stack.
+    let final_stack: Vec<u64> = initial_stack.iter().cloned().rev().collect();
 
-        // program 2: just enough drops as to not underflow, but no operation after.
-        const NUM_DROPS_NO_UNDERFLOW: usize = NUM_DROPS_NO_UNDERFLOW_SWAPS_ALLOWED + 1;
-        let program_no_underflow =
-            simple_program_with_ops(vec![Operation::Drop; NUM_DROPS_NO_UNDERFLOW]);
-        let result = FastProcessor::new(&[]).execute_sync(&program_no_underflow, &mut host);
-        assert!(result.is_ok());
-
-        // program 3: just enough drops to underflow
-        const NUM_DROPS_WITH_UNDERFLOW: usize = NUM_DROPS_NO_UNDERFLOW + 1;
-        let program_with_underflow =
-            simple_program_with_ops(vec![Operation::Drop; NUM_DROPS_WITH_UNDERFLOW]);
-        let err = FastProcessor::new(&[]).execute_sync(&program_with_underflow, &mut host);
-
-        assert_matches!(err, Err(ExecutionError::FailedToExecuteProgram(_)));
-    }
-
-    // Test overflow (similar structure to the underflow part)
-    {
-        // program 1: just enough dups to get 1 away from the stack buffer overflow error, and check
-        // that we can do some operations that don't change stack size there.
-        const NUM_DUPS_NO_OVERFLOW_SWAPS_ALLOWED: usize =
-            STACK_BUFFER_SIZE - INITIAL_STACK_TOP_IDX - 1;
-        let ops = {
-            let mut ops = vec![Operation::Dup0; NUM_DUPS_NO_OVERFLOW_SWAPS_ALLOWED];
-            ops.extend(vec![Operation::Swap; 25]);
-            // drop all the elements to not get an *output* stack overflow error (i.e. stack size is
-            // 16 at the end)
-            ops.extend(vec![Operation::Drop; NUM_DUPS_NO_OVERFLOW_SWAPS_ALLOWED]);
-
-            ops
-        };
-        let program_no_overflow = simple_program_with_ops(ops);
-        let result = FastProcessor::new(&[]).execute_sync(&program_no_overflow, &mut host);
-        assert_matches!(result, Ok(_));
-
-        // program 2: just enough dups to get 1 away from the stack buffer overflow error. Since we
-        // can't drop the elements, we expect to end the program with a stack output overflow.
-        const NUM_DUPS_NO_OVERFLOW: usize = NUM_DUPS_NO_OVERFLOW_SWAPS_ALLOWED + 1;
-
-        let ops = vec![Operation::Dup0; NUM_DUPS_NO_OVERFLOW];
-        let program_output_overflow = simple_program_with_ops(ops);
-        let result = FastProcessor::new(&[]).execute_sync(&program_output_overflow, &mut host);
-        assert_matches!(result, Err(ExecutionError::OutputStackOverflow(_)));
-
-        // program 3: just enough dups to get 1 away from the stack buffer overflow error. Since we
-        // can't drop the elements, we expect to end the program with a stack output overflow.
-        const NUM_DUPS_WITH_OVERFLOW: usize = NUM_DUPS_NO_OVERFLOW + 1;
-
-        let ops = vec![Operation::Dup0; NUM_DUPS_WITH_OVERFLOW];
-        let program_with_overflow = simple_program_with_ops(ops);
-        let result = FastProcessor::new(&[]).execute_sync(&program_with_overflow, &mut host);
-        assert_matches!(result, Err(ExecutionError::FailedToExecuteProgram(_)));
-    }
+    let test = build_test!(&asm, &initial_stack);
+    test.expect_stack(&final_stack);
 }
 
-/// In all these cases, the stack only grows or shrink by 1, and we have 2 spots on each side, so
-/// execution never fails.
+/// Similar to `test_reset_stack_in_buffer_from_drop`, but here we test that the stack is correctly
+/// reset in the buffer when the stack is reset in the buffer as a result of an execution context
+/// being restored (and the overflow table restored back in the stack buffer).
 #[test]
-fn test_stack_overflow_bounds_success() {
-    let mut host = DefaultHost::default();
+fn test_reset_stack_in_buffer_from_restore_context() {
+    /// Number of values pushed onto the stack initially.
+    const NUM_INITIAL_PUSHES: usize = INITIAL_STACK_TOP_IDX * 2;
+    /// This moves the stack in the stack buffer to the left, close enough to the edge that when we
+    /// restore the context, we will have to copy the overflow table values back into the stack
+    /// buffer.
+    const NUM_DROPS_IN_NEW_CONTEXT: usize = NUM_INITIAL_PUSHES + (INITIAL_STACK_TOP_IDX / 2);
+    /// The called function will have dropped all 16 of the pushed values, so when we return to
+    /// the caller, we expect the overflow table to contain all the original values, except for
+    /// the 16 that were dropped by the callee.
+    const NUM_EXPECTED_VALUES_IN_OVERFLOW: usize = NUM_INITIAL_PUSHES - MIN_STACK_DEPTH;
 
-    // dup1, add
-    {
-        let program = simple_program_with_ops(vec![Operation::Dup1, Operation::Add]);
-        FastProcessor::new(&[]).execute_sync(&program, &mut host).unwrap();
-    }
+    let asm = format!(
+        "
+        proc.fn_in_new_context
+            repeat.{NUM_DROPS_IN_NEW_CONTEXT} drop end
+        end
 
-    // the first add doesn't change the stack size, but the subsequent dup1 does
-    {
-        let program =
-            simple_program_with_ops(vec![Operation::Add, Operation::Dup1, Operation::Add]);
-        FastProcessor::new(&[]).execute_sync(&program, &mut host).unwrap();
-    }
+    begin
+        # Create a big overflow table
+        repeat.{NUM_INITIAL_PUSHES} push.42 end
 
-    // alternating add/dup1, with some swaps which don't change the stack size.
-    // Note that add when stack size is 16 doesn't reduce the stack size.
-    {
-        let program = simple_program_with_ops(vec![
-            // stack depth after: 16
-            Operation::Add,
-            // stack depth after: 17
-            Operation::Dup1,
-            // stack depth after: 16
-            Operation::Add,
-            // stack depth after: 17
-            Operation::Dup1,
-            // stack depth after: 17
-            Operation::Swap,
-            // stack depth after: 16
-            Operation::Add,
-            // stack depth after: 17
-            Operation::Dup1,
-            // stack depth after: 16
-            Operation::Add,
-            // stack depth after: 16
-            Operation::Swap,
-        ]);
-        FastProcessor::new(&[]).execute_sync(&program, &mut host).unwrap();
-    }
-}
+        # Call a proc to create a new execution context
+        call.fn_in_new_context
 
-#[test]
-fn test_fmp_add() {
-    let mut host = DefaultHost::default();
+        # Drop the stack top coming back from the called proc; these should all
+        # be 0s pulled from the overflow table
+        repeat.{MIN_STACK_DEPTH} drop end
 
-    // set the initial FMP to a different value than the default
-    let initial_fmp = Felt::new(FMP_MIN + 4);
-    let stack_inputs = vec![1_u32.into(), 2_u32.into(), 3_u32.into()];
-    let program = simple_program_with_ops(vec![Operation::FmpAdd]);
+        # Make sure that the rest of the pushed values were properly restored
+        repeat.{NUM_EXPECTED_VALUES_IN_OVERFLOW} push.42 assert_eq end
+    end
+    "
+    );
 
-    let mut processor = FastProcessor::new(&stack_inputs);
-    processor.fmp = initial_fmp;
+    let initial_stack: [u64; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
-    let stack_outputs = processor.execute_sync(&program, &mut host).unwrap();
+    // we expect the final stack to be the initial stack unchanged; we reverse since in
+    // `build_test!`, we call `StackInputs::new()`, which reverses the input stack.
+    let final_stack: Vec<u64> = initial_stack.iter().cloned().rev().collect();
 
-    // Check that the top of the stack is the sum of the initial FMP and the top of the stack input
-    let expected_top = initial_fmp + stack_inputs[2];
-    assert_eq!(stack_outputs.stack_truncated(1)[0], expected_top);
-}
-
-#[test]
-fn test_fmp_update() {
-    let mut host = DefaultHost::default();
-
-    // set the initial FMP to a different value than the default
-    let initial_fmp = Felt::new(FMP_MIN + 4);
-    let stack_inputs = vec![5_u32.into()];
-    let program = simple_program_with_ops(vec![Operation::FmpUpdate]);
-
-    let mut processor = FastProcessor::new(&stack_inputs);
-    processor.fmp = initial_fmp;
-
-    let stack_outputs = processor.execute_sync_mut(&program, &mut host).unwrap();
-
-    // Check that the FMP is updated correctly
-    let expected_fmp = initial_fmp + stack_inputs[0];
-    assert_eq!(processor.fmp, expected_fmp);
-
-    // Check that the top of the stack is popped correctly
-    assert_eq!(stack_outputs.stack_truncated(0).len(), 0);
-}
-
-#[test]
-fn test_fmp_update_fail() {
-    let mut host = DefaultHost::default();
-
-    // set the initial FMP to a value close to FMP_MAX
-    let initial_fmp = Felt::new(FMP_MAX - 4);
-    let stack_inputs = vec![5_u32.into()];
-    let program = simple_program_with_ops(vec![Operation::FmpUpdate]);
-
-    let mut processor = FastProcessor::new(&stack_inputs);
-    processor.fmp = initial_fmp;
-
-    let err = processor.execute_sync(&program, &mut host).unwrap_err();
-
-    // Check that the error is due to the FMP exceeding FMP_MAX
-    assert_matches!(err, ExecutionError::InvalidFmpValue(_, _));
-
-    // set the initial FMP to a value close to FMP_MIN
-    let initial_fmp = Felt::new(FMP_MIN + 4);
-    let stack_inputs = vec![-Felt::new(5_u64)];
-    let program = simple_program_with_ops(vec![Operation::FmpUpdate]);
-
-    let mut processor = FastProcessor::new(&stack_inputs);
-    processor.fmp = initial_fmp;
-
-    let err = processor.execute_sync(&program, &mut host).unwrap_err();
-
-    // Check that the error is due to the FMP being less than FMP_MIN
-    assert_matches!(err, ExecutionError::InvalidFmpValue(_, _));
+    let test = build_test!(&asm, &initial_stack);
+    test.expect_stack(&final_stack);
 }
 
 /// Tests that a syscall fails when the syscall target is not in the kernel.
@@ -219,7 +103,7 @@ fn test_syscall_fail() {
     let stack_inputs = vec![5_u32.into()];
     let program = {
         let mut program = MastForest::new();
-        let basic_block_id = program.add_block(vec![Operation::Add], None).unwrap();
+        let basic_block_id = program.add_block(vec![Operation::Add], Vec::new()).unwrap();
         let root_id = program.add_syscall(basic_block_id).unwrap();
         program.make_root(root_id);
 
@@ -371,11 +255,14 @@ fn test_call_node_preserves_stack_overflow_table() {
     let program = {
         let mut program = MastForest::new();
         // foo proc
-        let foo_id = program.add_block(vec![Operation::Add], None).unwrap();
+        let foo_id = program.add_block(vec![Operation::Add], Vec::new()).unwrap();
 
         // before call
         let push10_push20_id = program
-            .add_block(vec![Operation::Push(10_u32.into()), Operation::Push(20_u32.into())], None)
+            .add_block(
+                vec![Operation::Push(10_u32.into()), Operation::Push(20_u32.into())],
+                Vec::new(),
+            )
             .unwrap();
 
         // call
@@ -384,7 +271,7 @@ fn test_call_node_preserves_stack_overflow_table() {
         let swap_drop_swap_drop = program
             .add_block(
                 vec![Operation::Swap, Operation::Drop, Operation::Swap, Operation::Drop],
-                None,
+                Vec::new(),
             )
             .unwrap();
 
@@ -447,13 +334,80 @@ fn test_call_node_preserves_stack_overflow_table() {
     );
 }
 
+// EXTERNAL NODE TESTS
+// -----------------------------------------------------------------------------------------------
+
+#[test]
+fn test_external_node_decorator_sequencing() {
+    let mut lib_forest = MastForest::new();
+
+    // Add a decorator to the lib forest to track execution inside the external node
+    let lib_decorator = Decorator::Trace(2);
+    let lib_decorator_id = lib_forest.add_decorator(lib_decorator.clone()).unwrap();
+
+    let lib_operations = [Operation::Push(1_u32.into()), Operation::Add];
+    // Attach the decorator to the first operation (index 0)
+    let lib_block =
+        BasicBlockNode::new(lib_operations.to_vec(), vec![(0, lib_decorator_id)]).unwrap();
+    let lib_block_id = lib_forest.add_node(lib_block).unwrap();
+    lib_forest.make_root(lib_block_id);
+
+    let mut main_forest = MastForest::new();
+    let before_decorator = Decorator::Trace(1);
+    let after_decorator = Decorator::Trace(3);
+    let before_id = main_forest.add_decorator(before_decorator.clone()).unwrap();
+    let after_id = main_forest.add_decorator(after_decorator.clone()).unwrap();
+
+    let mut external_node = ExternalNode::new(lib_forest[lib_block_id].digest());
+    external_node.append_before_enter(&[before_id]);
+    external_node.append_after_exit(&[after_id]);
+    let external_id = main_forest.add_node(external_node).unwrap();
+    main_forest.make_root(external_id);
+
+    let program = Program::new(main_forest.into(), external_id);
+    let mut host =
+        crate::test_utils::test_consistency_host::TestConsistencyHost::with_kernel_forest(
+            Arc::new(lib_forest),
+        );
+    let processor = FastProcessor::new(&alloc::vec::Vec::new());
+
+    let result = processor.execute_sync(&program, &mut host);
+    assert!(result.is_ok(), "Execution failed: {:?}", result);
+
+    // Verify all decorators executed
+    assert_eq!(host.get_trace_count(1), 1, "before_enter decorator should execute exactly once");
+    assert_eq!(
+        host.get_trace_count(2),
+        1,
+        "external node decorator should execute exactly once"
+    );
+    assert_eq!(host.get_trace_count(3), 1, "after_exit decorator should execute exactly once");
+
+    // More importantly, verify the complete execution order
+    let execution_order = host.get_execution_order();
+    assert_eq!(execution_order.len(), 3, "Should have exactly 3 trace events");
+    assert_eq!(execution_order[0].0, 1, "before_enter should execute first");
+    assert_eq!(execution_order[1].0, 2, "external node decorator should execute second");
+    assert_eq!(execution_order[2].0, 3, "after_exit should execute last");
+
+    // Verify that clock cycles are in strictly increasing order
+    assert!(
+        execution_order[1].1 > execution_order[0].1,
+        "external node should execute after before_enter"
+    );
+    assert!(
+        execution_order[2].1 > execution_order[1].1,
+        "after_exit should execute after external node operations"
+    );
+}
+
 // TEST HELPERS
 // -----------------------------------------------------------------------------------------------
 
 fn simple_program_with_ops(ops: Vec<Operation>) -> Program {
     let program: Program = {
         let mut program = MastForest::new();
-        let root_id = program.add_block(ops, None).unwrap();
+        let root_id = program.add_block(ops, Vec::new()).unwrap();
         program.make_root(root_id);
 
         Program::new(program.into(), root_id)

@@ -1,11 +1,12 @@
 use alloc::{
     boxed::Box,
     collections::{BTreeMap, btree_map::Entry},
+    sync::Arc,
     vec::Vec,
 };
 use core::{error::Error, fmt, fmt::Debug};
 
-use miden_core::DebugOptions;
+use miden_core::{DebugOptions, EventId, EventName, sys_events::SystemEvent};
 
 use crate::{AdviceMutation, ExecutionError, ProcessState};
 
@@ -33,6 +34,15 @@ where
 {
     fn on_event(&self, process: &ProcessState) -> Result<Vec<AdviceMutation>, EventError> {
         self(process)
+    }
+}
+
+/// A handler which ignores the process state and leaves the `AdviceProvider` unchanged.
+pub struct NoopEventHandler;
+
+impl EventHandler for NoopEventHandler {
+    fn on_event(&self, _process: &ProcessState) -> Result<Vec<AdviceMutation>, EventError> {
+        Ok(Vec::new())
     }
 }
 
@@ -91,7 +101,7 @@ pub type EventError = Box<dyn Error + Send + Sync + 'static>;
 /// ```
 #[derive(Default)]
 pub struct EventHandlerRegistry {
-    handlers: BTreeMap<u32, Box<dyn EventHandler>>,
+    handlers: BTreeMap<EventId, (EventName, Arc<dyn EventHandler>)>,
 }
 
 impl EventHandlerRegistry {
@@ -99,38 +109,57 @@ impl EventHandlerRegistry {
         Self { handlers: BTreeMap::new() }
     }
 
-    /// Registers a boxed [`EventHandler`] with a given identifier.
+    /// Registers an [`EventHandler`] with a given event name.
+    ///
+    /// The [`EventId`] is computed from the event name during registration.
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - The event is a reserved system event
+    /// - A handler with the same event ID is already registered
     pub fn register(
         &mut self,
-        id: u32,
-        handler: Box<dyn EventHandler>,
+        event: EventName,
+        handler: Arc<dyn EventHandler>,
     ) -> Result<(), ExecutionError> {
+        // Check if the event is a reserved system event
+        if SystemEvent::from_name(event.as_str()).is_some() {
+            return Err(ExecutionError::ReservedEventNamespace { event });
+        }
+
+        // Compute EventId from the event name
+        let id = event.to_event_id();
         match self.handlers.entry(id) {
-            Entry::Vacant(e) => e.insert(handler),
-            Entry::Occupied(_) => return Err(ExecutionError::DuplicateEventHandler { id }),
+            Entry::Vacant(e) => e.insert((event, handler)),
+            Entry::Occupied(_) => return Err(ExecutionError::DuplicateEventHandler { event }),
         };
         Ok(())
     }
 
     /// Unregisters a handler with the given identifier, returning a flag whether a handler with
     /// that identifier was previously registered.
-    pub fn unregister(&mut self, id: u32) -> bool {
+    pub fn unregister(&mut self, id: EventId) -> bool {
         self.handlers.remove(&id).is_some()
+    }
+
+    /// Returns the [`EventName`] registered for `id`, if any.
+    pub fn resolve_event(&self, id: EventId) -> Option<&EventName> {
+        self.handlers.get(&id).map(|(event, _)| event)
     }
 
     /// Handles the event if the registry contains a handler with the same identifier.
     ///
-    /// Returns an `Option<_>` indicating whether the event was handled, wrapping resulting
-    /// mutations if any. Returns `None` if the event was not handled, if the event was handled
-    /// successfully `Some(mutations)` is returned, and if the handler returns an error, it is
-    /// propagated to the caller.
+    /// Returns an `Option<_>` indicating whether the event was handled. Returns `None` if the
+    /// event was not handled, `Some(mutations)` if it was handled successfully, and propagates
+    /// handler errors to the caller.
     pub fn handle_event(
         &self,
-        id: u32,
+        id: EventId,
         process: &ProcessState,
     ) -> Result<Option<Vec<AdviceMutation>>, EventError> {
-        if let Some(handler) = self.handlers.get(&id) {
-            return handler.on_event(process).map(Some);
+        if let Some((_event_name, handler)) = self.handlers.get(&id) {
+            let mutations = handler.on_event(process)?;
+            return Ok(Some(mutations));
         }
 
         Ok(None)
@@ -139,8 +168,8 @@ impl EventHandlerRegistry {
 
 impl Debug for EventHandlerRegistry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let keys: Vec<_> = self.handlers.keys().collect();
-        f.debug_struct("EventHandlerRegistry").field("handlers", &keys).finish()
+        let events: Vec<_> = self.handlers.values().map(|(event, _)| event).collect();
+        f.debug_struct("EventHandlerRegistry").field("handlers", &events).finish()
     }
 }
 
@@ -155,10 +184,8 @@ pub trait DebugHandler: Sync {
         process: &ProcessState,
         options: &DebugOptions,
     ) -> Result<(), ExecutionError> {
-        let _ = (&process, options);
-        #[cfg(feature = "std")]
-        crate::host::debug::print_debug_info(process, options);
-        Ok(())
+        let mut handler = crate::host::debug::DefaultDebugHandler::default();
+        handler.on_debug(process, options)
     }
 
     /// This function is invoked when the `Trace` decorator is executed.

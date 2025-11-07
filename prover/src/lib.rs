@@ -14,8 +14,8 @@ use miden_gpu::HashFn;
 use miden_processor::{
     ExecutionTrace, Program,
     crypto::{
-        Blake3_192, Blake3_256, ElementHasher, RandomCoin, Rpo256, RpoRandomCoin, Rpx256,
-        RpxRandomCoin, WinterRandomCoin,
+        Blake3_192, Blake3_256, ElementHasher, Poseidon2, RandomCoin, Rpo256, RpoRandomCoin,
+        Rpx256, RpxRandomCoin, WinterRandomCoin,
     },
     math::{Felt, FieldElement},
 };
@@ -38,8 +38,8 @@ pub use miden_air::{
     DeserializationError, ExecutionProof, FieldExtension, HashFunction, ProvingOptions,
 };
 pub use miden_processor::{
-    AdviceInputs, AsyncHost, BaseHost, ExecutionError, InputError, StackInputs, StackOutputs,
-    SyncHost, Word, crypto, math, utils,
+    AdviceInputs, AsyncHost, BaseHost, ExecutionError, InputError, PrecompileRequest, StackInputs,
+    StackOutputs, SyncHost, Word, crypto, math, utils,
 };
 pub use winter_prover::{Proof, crypto::MerkleTree as MerkleTreeVC};
 
@@ -68,7 +68,7 @@ pub fn prove(
     // execute the program to create an execution trace
     #[cfg(feature = "std")]
     let now = Instant::now();
-    let trace = miden_processor::execute(
+    let mut trace = miden_processor::execute(
         program,
         stack_inputs.clone(),
         advice_inputs,
@@ -87,6 +87,9 @@ pub fn prove(
 
     let stack_outputs = trace.stack_outputs().clone();
     let hash_fn = options.hash_fn();
+
+    // extract precompile requests from the trace to include in the proof
+    let pc_requests = trace.take_precompile_requests();
 
     // generate STARK proof
     let proof = match hash_fn {
@@ -126,9 +129,18 @@ pub fn prove(
             let prover = gpu::metal::MetalExecutionProver::new(prover, HashFn::Rpx256);
             maybe_await!(prover.prove(trace))
         },
+        HashFunction::Poseidon2 => {
+            let prover = ExecutionProver::<Poseidon2, WinterRandomCoin<_>>::new(
+                options,
+                stack_inputs,
+                stack_outputs.clone(),
+            );
+            maybe_await!(prover.prove(trace))
+        },
     }
     .map_err(ExecutionError::ProverError)?;
-    let proof = ExecutionProof::new(proof, hash_fn);
+
+    let proof = ExecutionProof::new(proof, hash_fn, pc_requests);
 
     Ok((stack_outputs, proof))
 }
@@ -218,7 +230,13 @@ where
         );
 
         let program_info = trace.program_info().clone();
-        PublicInputs::new(program_info, self.stack_inputs.clone(), self.stack_outputs.clone())
+        let final_pc_transcript = trace.final_precompile_transcript();
+        PublicInputs::new(
+            program_info,
+            self.stack_inputs.clone(),
+            self.stack_outputs.clone(),
+            final_pc_transcript.state(),
+        )
     }
 
     #[maybe_async]

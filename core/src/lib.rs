@@ -61,9 +61,9 @@ pub use miden_crypto::{EMPTY_WORD, ONE, WORD_SIZE, Word, ZERO, word::Lexicograph
 pub mod crypto {
     pub mod merkle {
         pub use miden_crypto::merkle::{
-            DefaultMerkleStore, EmptySubtreeRoots, InnerNodeInfo, LeafIndex, MerkleError,
-            MerklePath, MerkleStore, MerkleTree, Mmr, MmrPeaks, NodeIndex, PartialMerkleTree,
-            RecordingMerkleStore, SMT_DEPTH, SimpleSmt, Smt, SmtProof, SmtProofError, StoreNode,
+            EmptySubtreeRoots, InnerNodeInfo, LeafIndex, MerkleError, MerklePath, MerkleStore,
+            MerkleTree, Mmr, MmrPeaks, NodeIndex, PartialMerkleTree, SMT_DEPTH, SimpleSmt, Smt,
+            SmtProof, SmtProofError, StoreNode,
         };
     }
 
@@ -71,6 +71,7 @@ pub mod crypto {
         pub use miden_crypto::hash::{
             Digest, ElementHasher, Hasher,
             blake::{Blake3_160, Blake3_192, Blake3_256, Blake3Digest},
+            poseidon2::Poseidon2,
             rpo::Rpo256,
             rpx::Rpx256,
         };
@@ -117,16 +118,34 @@ pub mod prettier {
 
 mod operations;
 pub use operations::{
-    AssemblyOp, DebugOptions, Decorator, DecoratorIterator, DecoratorList, Operation,
-    opcode_constants::*,
+    AssemblyOp, DebugOptions, Decorator, DecoratorList, Operation, opcode_constants::*,
 };
 
 pub mod stack;
 pub use stack::{StackInputs, StackOutputs};
+
+mod event_id;
+pub use event_id::{EventId, EventName};
 
 pub mod sys_events;
 
 mod advice;
 pub use advice::map::AdviceMap;
 
+pub mod precompile;
 pub mod utils;
+
+// Re-export indexing functionality from the new standalone crate
+pub use miden_utils_indexing::{
+    DenseIdMap, Idx, IndexVec, IndexedVecError, LookupByIdx, newtype_id,
+};
+
+// CONSTANTS
+// ================================================================================================
+
+/// The initial value for the frame pointer, corresponding to the start address for procedure
+/// locals.
+pub const FMP_INIT_VALUE: Felt = Felt::new(2_u64.pow(31));
+
+/// The address where the frame pointer is stored in memory.
+pub const FMP_ADDR: Felt = Felt::new(u32::MAX as u64 - 1_u64);

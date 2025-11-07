@@ -1,5 +1,8 @@
 use core::fmt;
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
 // DEBUG OPTIONS
 // ================================================================================================
 
@@ -8,6 +11,8 @@ use core::fmt;
 /// These options define the debug info which gets printed out when the Debug decorator is
 /// executed.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(all(feature = "arbitrary", test), miden_test_serde_macros::serde_test)]
 pub enum DebugOptions {
     /// Print out the entire contents of the stack for the current execution context.
     StackAll,
@@ -27,6 +32,8 @@ pub enum DebugOptions {
     /// specifies the overall number of locals.
     LocalInterval(u16, u16, u16),
     /// Prints out the top n items of the advice stack for the current context.
+    ///
+    /// If `n = 0`, the entire stack is printed.
     AdvStackTop(u16),
 }
 

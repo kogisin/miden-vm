@@ -19,7 +19,7 @@ pub enum RowIndexError {
 // ================================================================================================
 
 /// A newtype wrapper around a usize value representing a step in the execution trace.
-#[derive(Debug, Copy, Clone, Eq, Ord, PartialOrd)]
+#[derive(Debug, Default, Copy, Clone, Eq, Ord, PartialOrd)]
 pub struct RowIndex(u32);
 
 impl RowIndex {
@@ -104,6 +104,8 @@ impl From<u32> for RowIndex {
         Self(value)
     }
 }
+
+impl miden_utils_indexing::Idx for RowIndex {}
 
 /// Converts an i32 value into a [`RowIndex`].
 ///

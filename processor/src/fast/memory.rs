@@ -3,7 +3,7 @@ use alloc::{collections::BTreeMap, vec::Vec};
 use miden_air::RowIndex;
 use miden_core::{EMPTY_WORD, Felt, WORD_SIZE, Word, ZERO};
 
-use crate::{ContextId, ErrorContext, MemoryAddress, MemoryError};
+use crate::{ContextId, ErrorContext, MemoryAddress, MemoryError, processor::MemoryInterface};
 
 /// The memory for the processor.
 ///
@@ -26,12 +26,13 @@ impl Memory {
     /// - Returns an error if the provided address is out-of-bounds.
     #[inline(always)]
     pub fn read_element(
-        &mut self,
+        &self,
         ctx: ContextId,
         addr: Felt,
         err_ctx: &impl ErrorContext,
     ) -> Result<Felt, MemoryError> {
         let element = self.read_element_impl(ctx, clean_addr(addr, err_ctx)?).unwrap_or(ZERO);
+
         Ok(element)
     }
 
@@ -206,4 +207,46 @@ fn enforce_word_aligned_addr(
     }
 
     Ok(addr)
+}
+
+impl MemoryInterface for Memory {
+    fn read_element(
+        &mut self,
+        ctx: ContextId,
+        addr: Felt,
+        err_ctx: &impl ErrorContext,
+    ) -> Result<Felt, MemoryError> {
+        Self::read_element(self, ctx, addr, err_ctx)
+    }
+
+    fn read_word(
+        &mut self,
+        ctx: ContextId,
+        addr: Felt,
+        clk: RowIndex,
+        err_ctx: &impl ErrorContext,
+    ) -> Result<Word, MemoryError> {
+        Self::read_word(self, ctx, addr, clk, err_ctx)
+    }
+
+    fn write_element(
+        &mut self,
+        ctx: ContextId,
+        addr: Felt,
+        element: Felt,
+        err_ctx: &impl ErrorContext,
+    ) -> Result<(), MemoryError> {
+        self.write_element(ctx, addr, element, err_ctx)
+    }
+
+    fn write_word(
+        &mut self,
+        ctx: ContextId,
+        addr: Felt,
+        clk: RowIndex,
+        word: Word,
+        err_ctx: &impl ErrorContext,
+    ) -> Result<(), MemoryError> {
+        self.write_word(ctx, addr, clk, word, err_ctx)
+    }
 }

@@ -68,10 +68,16 @@ impl StackOutputs {
         self.elements.get(idx).cloned()
     }
 
-    /// Returns the word located starting at the specified Felt position on the stack or `None` if
-    /// out of bounds. For example, passing in `0` returns the word at the top of the stack, and
-    /// passing in `4` returns the word starting at element index `4`.
-    pub fn get_stack_word(&self, idx: usize) -> Option<Word> {
+    /// Returns the word located starting at the specified Felt position on the stack in big-endian
+    /// (reversed) order, or `None` if out of bounds.
+    ///
+    /// For example, passing in `0` returns the word at the top of the stack, and passing in `4`
+    /// returns the word starting at element index `4`.
+    ///
+    /// In big-endian order, stack element N+3 will be at position 0 of the word, N+2 at
+    /// position 1, N+1 at position 2, and N at position 3. This matches the behavior of
+    /// `mem_loadw_be` where `mem[a+3]` ends up on top of the stack.
+    pub fn get_stack_word_be(&self, idx: usize) -> Option<Word> {
         let word_elements: [Felt; WORD_SIZE] = {
             let word_elements: Vec<Felt> = range(idx, 4)
                 .map(|idx| self.get_stack_item(idx))
@@ -84,6 +90,38 @@ impl StackOutputs {
         };
 
         Some(word_elements.into())
+    }
+
+    /// Returns the word located starting at the specified Felt position on the stack in
+    /// little-endian (memory) order, or `None` if out of bounds.
+    ///
+    /// For example, passing in `0` returns the word at the top of the stack, and passing in `4`
+    /// returns the word starting at element index `4`.
+    ///
+    /// In little-endian order, stack element N will be at position 0 of the word, N+1 at
+    /// position 1, N+2 at position 2, and N+3 at position 3. This matches the behavior of
+    /// `mem_loadw_le` where `mem[a]` ends up on top of the stack.
+    pub fn get_stack_word_le(&self, idx: usize) -> Option<Word> {
+        self.get_stack_word_be(idx).map(|mut word| {
+            word.reverse();
+            word
+        })
+    }
+
+    /// Returns the word located starting at the specified Felt position on the stack or `None` if
+    /// out of bounds.
+    ///
+    /// This is an alias for [`Self::get_stack_word_be`] for backward compatibility. For new code,
+    /// prefer using the explicit `get_stack_word_be()` or `get_stack_word_le()` to make the
+    /// ordering expectations clear.
+    ///
+    /// See [`Self::get_stack_word_be`] for detailed documentation.
+    #[deprecated(
+        since = "0.19.0",
+        note = "Use `get_stack_word_be()` or `get_stack_word_le()` to make endianness explicit"
+    )]
+    pub fn get_stack_word(&self, idx: usize) -> Option<Word> {
+        self.get_stack_word_be(idx)
     }
 
     /// Returns the number of requested stack outputs or returns the full stack if fewer than the
@@ -108,7 +146,7 @@ impl StackOutputs {
 }
 
 impl Deref for StackOutputs {
-    type Target = [Felt; 16];
+    type Target = [Felt; MIN_STACK_DEPTH];
 
     fn deref(&self) -> &Self::Target {
         &self.elements
@@ -138,10 +176,8 @@ impl Deserializable for StackOutputs {
 
         let elements = source.read_many::<Felt>(num_elements.into())?;
 
-        StackOutputs::new(elements).map_err(|_| {
-            DeserializationError::InvalidValue(format!(
-                "number of stack elements should not be greater than {MIN_STACK_DEPTH}, but {num_elements} was found",
-            ))
+        StackOutputs::new(elements).map_err(|err| {
+            DeserializationError::InvalidValue(format!("failed to create stack outputs: {err}",))
         })
     }
 }

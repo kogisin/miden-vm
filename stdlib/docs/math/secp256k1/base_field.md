@@ -1,4 +1,6 @@
 Given [b, c, a, carry] on stack top, following function computes<br /><br />tmp = a + (b * c) + carry<br />hi = tmp >> 32<br />lo = tmp & 0xffff_ffff<br />return (hi, lo)<br /><br />At end of execution of this function, stack top should look like [hi, lo]<br />See https://github.com/itzmeanjan/secp256k1/blob/6e5e654823a073add7d62b21ed88e9de9bb06869/field/base_field_utils.py#L41-L46<br />
+
+
 ## std::math::secp256k1::base_field
 | Procedure | Description |
 | ----------- | ------------- |
